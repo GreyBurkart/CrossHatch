@@ -7,6 +7,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <TrashPaths.h>
 #include <Xtc.h>
 
 #include <cstdio>
@@ -16,6 +17,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "RecentBooksStore.h"
+#include "activities/boot_sleep/ImageFolderIndex.h"
 #include "activities/reader/BookReadingStats.h"
 #include "activities/reader/EpubReaderActivity.h"
 #include "activities/reader/GlobalReadingStats.h"
@@ -46,8 +48,14 @@ std::string bookStatsCachePath(const std::string& path) {
 std::vector<FileBrowserActionActivity::MenuItem> buildBookActionItems(const std::string& fullPath,
                                                                       const bool includeRemoveFromRecents) {
   std::vector<FileBrowserActionActivity::MenuItem> items;
+  if (crosshatch::trash::isPath(fullPath.c_str())) {
+    items.push_back({FileBrowserAction::Restore, StrId::STR_RESTORE});
+    items.push_back({FileBrowserAction::Delete, StrId::STR_PERMANENT_DELETE});
+    return items;
+  }
   items.reserve(includeRemoveFromRecents ? 7 : 6);
-  items.push_back({FileBrowserAction::Delete, StrId::STR_DELETE});
+  const StrId deleteLabel = (SETTINGS.recycleBinEnabled != 0) ? StrId::STR_MOVE_TO_TRASH : StrId::STR_DELETE;
+  items.push_back({FileBrowserAction::Delete, deleteLabel});
   if (hasClearableBookCache(fullPath)) {
     items.push_back({FileBrowserAction::DeleteCache, StrId::STR_DELETE_CACHE});
   }
@@ -239,6 +247,96 @@ void drawToast(const GfxRenderer& renderer, const char* msg) {
   renderer.fillRect(toastX, toastY, toastW, toastH, true);
   renderer.drawText(UI_10_FONT_ID, toastX + toastPadX, toastY + toastPadY, msg, false);
   renderer.displayBuffer();
+}
+
+bool deleteOrTrashFile(const std::string& fullPath, bool& movedToTrash) {
+  if (SETTINGS.recycleBinEnabled && !crosshatch::trash::isPath(fullPath.c_str())) {
+    char trashParent[256];
+    if (!crosshatch::trash::buildTrashParent(trashParent, sizeof(trashParent), fullPath.c_str())) {
+      LOG_ERR("BookActions", "Failed to build trash parent for: %s", fullPath.c_str());
+      return false;
+    }
+    if (!Storage.exists(trashParent) && !Storage.mkdir(trashParent)) {
+      LOG_ERR("BookActions", "Failed to create trash parent: %s", trashParent);
+      return false;
+    }
+    const char* lastSlash = strrchr(fullPath.c_str(), '/');
+    const char* fileName = lastSlash ? lastSlash + 1 : fullPath.c_str();
+    char trashDest[256];
+    const bool found = crosshatch::trash::findVacantPath(
+        trashDest, sizeof(trashDest), trashParent, fileName, [](const char* candidate) {
+          return Storage.exists(candidate) ? crosshatch::trash::PathProbe::Occupied
+                                           : crosshatch::trash::PathProbe::Vacant;
+        });
+    if (!found) {
+      LOG_ERR("BookActions", "Failed to find vacant trash path for: %s", fullPath.c_str());
+      return false;
+    }
+    if (!Storage.rename(fullPath.c_str(), trashDest)) {
+      LOG_ERR("BookActions", "Failed to move file to trash: %s -> %s", fullPath.c_str(), trashDest);
+      return false;
+    }
+    movedToTrash = true;
+  } else {
+    clearFileMetadata(fullPath);
+    if (crosshatch::trash::isPath(fullPath.c_str())) {
+      const char* origPath = fullPath.c_str() + strlen(crosshatch::trash::DIRECTORY);
+      clearFileMetadata(origPath);
+    }
+    if (!Storage.remove(fullPath.c_str())) {
+      LOG_ERR("BookActions", "Failed to delete file: %s", fullPath.c_str());
+      return false;
+    }
+    movedToTrash = false;
+  }
+
+  RECENT_BOOKS.removeByPath(fullPath);
+  ImageFolderIndex::invalidateForPath(fullPath.c_str());
+
+  if (APP_STATE.favoriteSleepImagePath == fullPath) {
+    APP_STATE.favoriteSleepImagePath.clear();
+    APP_STATE.saveToFile();
+  }
+  if (APP_STATE.favoriteBootImagePath == fullPath) {
+    APP_STATE.favoriteBootImagePath.clear();
+    APP_STATE.saveToFile();
+  }
+  return true;
+}
+
+bool restoreTrashedFile(const std::string& fullPath, std::string& restoredPath) {
+  if (!crosshatch::trash::isPath(fullPath.c_str())) {
+    return false;
+  }
+
+  char parentDir[256];
+  char destPath[256];
+  const char* lastSlash = strrchr(fullPath.c_str(), '/');
+  const char* fileName = lastSlash ? lastSlash + 1 : fullPath.c_str();
+
+  const bool targetFound = crosshatch::trash::findRestorePath(
+      destPath, sizeof(destPath), parentDir, sizeof(parentDir), fullPath.c_str(), fileName,
+      [](const char* parent) {
+        if (strcmp(parent, "/") == 0) return true;
+        return Storage.exists(parent) || Storage.mkdir(parent);
+      },
+      [](const char* candidate) {
+        return Storage.exists(candidate) ? crosshatch::trash::PathProbe::Occupied
+                                         : crosshatch::trash::PathProbe::Vacant;
+      });
+
+  if (!targetFound) {
+    LOG_ERR("BookActions", "Failed to find restore path for: %s", fullPath.c_str());
+    return false;
+  }
+
+  if (!Storage.rename(fullPath.c_str(), destPath)) {
+    LOG_ERR("BookActions", "Failed to rename during restore: %s -> %s", fullPath.c_str(), destPath);
+    return false;
+  }
+
+  restoredPath = destPath;
+  return true;
 }
 
 }  // namespace BookActions

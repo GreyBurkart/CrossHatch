@@ -5,6 +5,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <TrashPaths.h>
 
 #include <algorithm>
 
@@ -324,24 +325,25 @@ void BmpViewerActivity::unpinBootFavorite() {
 
 void BmpViewerActivity::promptDeleteImage() {
   const std::string path = filePath;
-  startActivityForResult(
-      std::make_unique<ConfirmationActivity>(renderer, mappedInput, BookActions::confirmationHeading(StrId::STR_DELETE),
-                                             imageDisplayName(path)),
-      [this, path](const ActivityResult& result) {
-        if (result.isCancelled) return;
-        if (!Storage.remove(path.c_str())) {
-          LOG_ERR("BmpViewer", "Failed to delete image: %s", path.c_str());
-          return;
-        }
-        ImageFolderIndex::invalidateForPath(path.c_str());
-        if (APP_STATE.favoriteSleepImagePath == path) {
-          unpinSleepFavorite();
-        }
-        if (APP_STATE.favoriteBootImagePath == path) {
-          unpinBootFavorite();
-        }
-        activityManager.goToFileBrowser(path);
-      });
+  const bool inTrash = crosshatch::trash::isPath(path.c_str());
+  const bool moveToTrash = SETTINGS.recycleBinEnabled && !inTrash;
+  const StrId labelId =
+      inTrash ? StrId::STR_PERMANENT_DELETE : (moveToTrash ? StrId::STR_MOVE_TO_TRASH : StrId::STR_DELETE);
+  startActivityForResult(std::make_unique<ConfirmationActivity>(
+                             renderer, mappedInput, BookActions::confirmationHeading(labelId), imageDisplayName(path)),
+                         [this, path, moveToTrash](const ActivityResult& result) {
+                           if (result.isCancelled) return;
+                           bool moved = false;
+                           if (!BookActions::deleteOrTrashFile(path, moved)) {
+                             LOG_ERR("BmpViewer", "Failed to delete image: %s", path.c_str());
+                             return;
+                           }
+                           if (moved) {
+                             BookActions::drawToast(renderer, tr(STR_MOVED_TO_TRASH));
+                             delay(1000);
+                           }
+                           activityManager.goToFileBrowser(path);
+                         });
 }
 
 void BmpViewerActivity::showContextMenu() {
@@ -395,6 +397,8 @@ void BmpViewerActivity::showContextMenu() {
                              case FileBrowserAction::UnpinBootFavorite:
                                unpinBootFavorite();
                                return;
+                             case FileBrowserAction::Restore:
+                             case FileBrowserAction::EmptyTrash:
                              case FileBrowserAction::DeleteCache:
                              case FileBrowserAction::SetSleepFolder:
                              case FileBrowserAction::ClearSleepFolder:

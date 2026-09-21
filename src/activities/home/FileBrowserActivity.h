@@ -29,6 +29,8 @@ class FileBrowserActivity final : public Activity {
   void promptDeleteFile(const std::string& fullPath, const std::string& entry);
   void promptDeleteDirectory(const std::string& fullPath, const std::string& entry,
                              bool ignoreInitialConfirmRelease = false);
+  void promptRestoreFile(const std::string& fullPath, const std::string& entry);
+  void promptEmptyTrash();
   void showDirectoryActionMenu(const std::string& entry, bool ignoreInitialConfirmRelease = false);
   void pinSleepFavorite(const std::string& fullPath);
   void unpinSleepFavorite();

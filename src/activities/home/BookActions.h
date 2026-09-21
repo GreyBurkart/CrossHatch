@@ -24,5 +24,7 @@ std::string confirmationHeading(StrId actionLabelId);
 bool isBookCompleted(const std::string& fullPath);
 bool toggleBookCompleted(const std::string& fullPath, const std::string& displayName, bool& completed);
 void drawToast(const GfxRenderer& renderer, const char* msg);
+bool deleteOrTrashFile(const std::string& fullPath, bool& movedToTrash);
+bool restoreTrashedFile(const std::string& fullPath, std::string& restoredPath);
 
 }  // namespace BookActions

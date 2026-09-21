@@ -7,6 +7,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
+#include <TrashPaths.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -421,23 +422,22 @@ void FileBrowserActivity::onExit() {
 }
 
 void FileBrowserActivity::promptDeleteFile(const std::string& fullPath, const std::string& entry) {
-  auto handler = [this, fullPath](const ActivityResult& res) {
+  const bool inTrash = crosshatch::trash::isPath(fullPath.c_str());
+  const bool moveToTrash = SETTINGS.recycleBinEnabled && !inTrash;
+  auto handler = [this, fullPath, moveToTrash](const ActivityResult& res) {
     if (res.isCancelled) {
       return;
     }
 
-    BookActions::clearFileMetadata(fullPath);
-    if (!Storage.remove(fullPath.c_str())) {
-      LOG_ERR("FileBrowser", "Failed to delete file: %s", fullPath.c_str());
+    bool moved = false;
+    if (!BookActions::deleteOrTrashFile(fullPath, moved)) {
+      LOG_ERR("FileBrowser", "Failed to delete/trash file: %s", fullPath.c_str());
       return;
     }
-    ImageFolderIndex::invalidateForPath(fullPath.c_str());
 
-    if (isPinnedSleepFavorite(fullPath)) {
-      unpinSleepFavorite();
-    }
-    if (isPinnedBootFavorite(fullPath)) {
-      unpinBootFavorite();
+    if (moved) {
+      BookActions::drawToast(renderer, tr(STR_MOVED_TO_TRASH));
+      delay(1000);
     }
 
     {
@@ -454,13 +454,102 @@ void FileBrowserActivity::promptDeleteFile(const std::string& fullPath, const st
     requestUpdate(true);
   };
 
-  const std::string heading = tr(STR_DELETE) + std::string("? ");
-  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
+  const StrId labelId =
+      inTrash ? StrId::STR_PERMANENT_DELETE : (moveToTrash ? StrId::STR_MOVE_TO_TRASH : StrId::STR_DELETE);
+  const std::string heading = BookActions::confirmationHeading(labelId);
+  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, getFileName(entry)),
+                         handler);
+}
+
+void FileBrowserActivity::promptRestoreFile(const std::string& fullPath, const std::string& entry) {
+  auto handler = [this, fullPath](const ActivityResult& res) {
+    if (res.isCancelled) {
+      return;
+    }
+
+    std::string restoredPath;
+    if (!BookActions::restoreTrashedFile(fullPath, restoredPath)) {
+      LOG_ERR("FileBrowser", "Failed to restore file: %s", fullPath.c_str());
+      BookActions::drawToast(renderer, tr(STR_RESTORE_FAILED));
+      delay(1000);
+      return;
+    }
+
+    BookActions::drawToast(renderer, tr(STR_RESTORED));
+    delay(1000);
+
+    {
+      RenderLock lock(*this);
+      loadFilesLocked();
+      if (entryCount() == 0) {
+        selectorIndex = 0;
+      } else if (selectorIndex >= entryCount()) {
+        selectorIndex = entryCount() - 1;
+      }
+    }
+    requestUpdate(true);
+  };
+
+  const std::string heading = tr(STR_RESTORE) + std::string("? ");
+  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, getFileName(entry)),
+                         handler);
+}
+
+void FileBrowserActivity::promptEmptyTrash() {
+  auto handler = [this](const ActivityResult& res) {
+    if (res.isCancelled) {
+      return;
+    }
+
+    std::vector<std::string> metadataPaths;
+    collectMetadataPathsRecursively(crosshatch::trash::DIRECTORY, metadataPaths);
+    for (const auto& metadataPath : metadataPaths) {
+      BookActions::clearFileMetadata(metadataPath);
+      if (crosshatch::trash::isPath(metadataPath.c_str())) {
+        const char* origPath = metadataPath.c_str() + strlen(crosshatch::trash::DIRECTORY);
+        BookActions::clearFileMetadata(origPath);
+      }
+      RECENT_BOOKS.removeByPath(metadataPath);
+    }
+
+    if (!Storage.removeDir(crosshatch::trash::DIRECTORY)) {
+      LOG_ERR("FileBrowser", "Failed to empty trash directory");
+    }
+    Storage.mkdir(crosshatch::trash::DIRECTORY);
+
+    if (crosshatch::trash::isPath(basepath.c_str())) {
+      basepath = "/";
+    }
+
+    BookActions::drawToast(renderer, tr(STR_TRASH_EMPTIED));
+    delay(1000);
+
+    {
+      RenderLock lock(*this);
+      loadFilesLocked();
+      if (entryCount() == 0) {
+        selectorIndex = 0;
+      } else if (selectorIndex >= entryCount()) {
+        selectorIndex = entryCount() - 1;
+      }
+    }
+    requestUpdate(true);
+  };
+
+  const std::string heading = tr(STR_EMPTY_TRASH) + std::string("? ");
+  startActivityForResult(
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, tr(STR_EMPTY_TRASH_CONFIRM)), handler);
 }
 
 void FileBrowserActivity::promptDeleteDirectory(const std::string& fullPath, const std::string& entry,
                                                 const bool ignoreInitialConfirmRelease) {
   const std::string dirPath = normalizeDirectoryPath(fullPath);
+  if (crosshatch::trash::isDirectory(dirPath.c_str())) {
+    BookActions::drawToast(renderer, tr(STR_CANNOT_DELETE_TRASH));
+    delay(1000);
+    return;
+  }
+
   auto handler = [this, dirPath](const ActivityResult& res) {
     longPressConfirmHandled = false;
     if (res.isCancelled) {
@@ -478,6 +567,7 @@ void FileBrowserActivity::promptDeleteDirectory(const std::string& fullPath, con
 
     for (const auto& metadataPath : metadataPaths) {
       BookActions::clearFileMetadata(metadataPath);
+      RECENT_BOOKS.removeByPath(metadataPath);
     }
 
     const std::string favoritePrefix = dirPath + "/";
@@ -512,11 +602,17 @@ void FileBrowserActivity::promptDeleteDirectory(const std::string& fullPath, con
 
 void FileBrowserActivity::showDirectoryActionMenu(const std::string& entry, bool ignoreInitialConfirmRelease) {
   const std::string fullPath = normalizeDirectoryPath(buildFullPath(basepath, entry));
-  const bool useDefaultFolders = isDefaultSleepFolderPath(fullPath) || isPreferredSleepFolder(fullPath);
   std::vector<FileBrowserActionActivity::MenuItem> items;
-  items.push_back({useDefaultFolders ? FileBrowserAction::ClearSleepFolder : FileBrowserAction::SetSleepFolder,
-                   useDefaultFolders ? StrId::STR_USE_DEFAULT_SLEEP_FOLDERS : StrId::STR_SET_AS_SLEEP_FOLDER});
-  items.push_back({FileBrowserAction::Delete, StrId::STR_DELETE});
+  if (crosshatch::trash::isDirectory(fullPath.c_str())) {
+    items.push_back({FileBrowserAction::EmptyTrash, StrId::STR_EMPTY_TRASH});
+  } else if (crosshatch::trash::isPath(fullPath.c_str())) {
+    items.push_back({FileBrowserAction::Delete, StrId::STR_PERMANENT_DELETE});
+  } else {
+    const bool useDefaultFolders = isDefaultSleepFolderPath(fullPath) || isPreferredSleepFolder(fullPath);
+    items.push_back({useDefaultFolders ? FileBrowserAction::ClearSleepFolder : FileBrowserAction::SetSleepFolder,
+                     useDefaultFolders ? StrId::STR_USE_DEFAULT_SLEEP_FOLDERS : StrId::STR_SET_AS_SLEEP_FOLDER});
+    items.push_back({FileBrowserAction::Delete, StrId::STR_DELETE});
+  }
 
   startActivityForResult(std::make_unique<FileBrowserActionActivity>(renderer, mappedInput, getFileName(entry),
                                                                      std::move(items), ignoreInitialConfirmRelease),
@@ -529,6 +625,9 @@ void FileBrowserActivity::showDirectoryActionMenu(const std::string& entry, bool
                            const auto action =
                                static_cast<FileBrowserAction>(std::get<FileBrowserActionResult>(result.data).action);
                            switch (action) {
+                             case FileBrowserAction::EmptyTrash:
+                               promptEmptyTrash();
+                               return;
                              case FileBrowserAction::Delete:
                                promptDeleteDirectory(fullPath, entry);
                                return;
@@ -538,6 +637,7 @@ void FileBrowserActivity::showDirectoryActionMenu(const std::string& entry, bool
                              case FileBrowserAction::ClearSleepFolder:
                                clearPreferredSleepFolder();
                                return;
+                             case FileBrowserAction::Restore:
                              case FileBrowserAction::DeleteCache:
                              case FileBrowserAction::DeleteStats:
                              case FileBrowserAction::ToggleCompleted:
@@ -667,22 +767,24 @@ void FileBrowserActivity::showFileActionMenu(const std::string& entry, bool igno
   const std::string fullPath = buildFullPath(basepath, entry);
   std::vector<FileBrowserActionActivity::MenuItem> items = BookActions::buildBookActionItems(fullPath, false);
 
-  if (BookActions::canSendNearby(fullPath)) {
-    items.push_back({FileBrowserAction::SendNearby, StrId::STR_SEND_NEARBY_BOOK});
-  }
+  if (!crosshatch::trash::isPath(fullPath.c_str())) {
+    if (BookActions::canSendNearby(fullPath)) {
+      items.push_back({FileBrowserAction::SendNearby, StrId::STR_SEND_NEARBY_BOOK});
+    }
 
-  const bool canPinFavorite = isSleepImageFile(entry);
-  if (canPinFavorite) {
-    items.push_back(
-        {isPinnedSleepFavorite(fullPath) ? FileBrowserAction::UnpinFavorite : FileBrowserAction::PinFavorite,
-         isPinnedSleepFavorite(fullPath) ? StrId::STR_UNPIN_AS_FAVORITE : StrId::STR_PIN_AS_FAVORITE});
-  }
+    const bool canPinFavorite = isSleepImageFile(entry);
+    if (canPinFavorite) {
+      items.push_back(
+          {isPinnedSleepFavorite(fullPath) ? FileBrowserAction::UnpinFavorite : FileBrowserAction::PinFavorite,
+           isPinnedSleepFavorite(fullPath) ? StrId::STR_UNPIN_AS_FAVORITE : StrId::STR_PIN_AS_FAVORITE});
+    }
 
-  const bool canPinBootFavorite = isBootImageFile(entry);
-  if (canPinBootFavorite) {
-    items.push_back(
-        {isPinnedBootFavorite(fullPath) ? FileBrowserAction::UnpinBootFavorite : FileBrowserAction::PinBootFavorite,
-         isPinnedBootFavorite(fullPath) ? StrId::STR_CLEAR_BOOT_SCREEN : StrId::STR_SET_AS_BOOT_SCREEN});
+    const bool canPinBootFavorite = isBootImageFile(entry);
+    if (canPinBootFavorite) {
+      items.push_back(
+          {isPinnedBootFavorite(fullPath) ? FileBrowserAction::UnpinBootFavorite : FileBrowserAction::PinBootFavorite,
+           isPinnedBootFavorite(fullPath) ? StrId::STR_CLEAR_BOOT_SCREEN : StrId::STR_SET_AS_BOOT_SCREEN});
+    }
   }
 
   startActivityForResult(
@@ -696,6 +798,11 @@ void FileBrowserActivity::showFileActionMenu(const std::string& entry, bool igno
 
         const auto action = static_cast<FileBrowserAction>(std::get<FileBrowserActionResult>(result.data).action);
         switch (action) {
+          case FileBrowserAction::Restore:
+            promptRestoreFile(fullPath, entry);
+            return;
+          case FileBrowserAction::EmptyTrash:
+            return;
           case FileBrowserAction::SendNearby:
             activityManager.goToNearbyBookSend(fullPath, false);
             return;
@@ -941,7 +1048,11 @@ void FileBrowserActivity::activateSelected() {
   if (isDirectory) {
     requestUpdate();
   } else {
-    onSelectBook(fullPath);
+    if (crosshatch::trash::isPath(fullPath.c_str())) {
+      showFileActionMenu(entry);
+    } else {
+      onSelectBook(fullPath);
+    }
   }
 }
 

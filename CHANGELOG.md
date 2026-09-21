@@ -1,3 +1,15 @@
+## [Unreleased]
+
+### Added
+
+- Recycle Bin / Trash: document deletion now safely moves items to `/trash` on SD storage by default with collision suffixing, allowing safe restoration to original locations or permanent deletion and Empty Trash.
+- Recycle Bin toggle in Settings under Files & Storage to switch between recoverable trash and immediate permanent deletion.
+- Streamlined `x4-pro` and `x4-pro-simulator` build targets with local PlatformIO configuration and native macOS simulator support.
+
+### Changed
+
+- Suppressed Reading Statistics UI across Home, Carousel, Reader menus, Frontlight Drawer quick actions, and Sleep Screen settings, cleanly focusing on book reading progress while strictly preserving bookmarks, reader settings, and reading progress.
+
 ## [v1.5.1] - 2026-09-10
 
 ### Added

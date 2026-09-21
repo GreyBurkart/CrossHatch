@@ -1108,8 +1108,7 @@ void HomeActivity::updateHighlightedBookContext(const bool allowEpubLoad) {
     }
   }
 
-  hasReadingStats = hasAnyBookStats(currentBookStats) || hasAnyGlobalStats(globalStats) ||
-                    (showAllDevicesStats && hasAnyGlobalStats(allDevicesGlobalStats));
+  hasReadingStats = false;
 }
 
 void HomeActivity::onExit() {

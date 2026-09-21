@@ -4,6 +4,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <TrashPaths.h>
 
 #include <algorithm>
 #include <memory>
@@ -198,22 +199,30 @@ void RecentBooksActivity::reloadAfterBookAction() {
 
 void RecentBooksActivity::promptDeleteBook(const RecentBook& book) {
   const std::string path = book.path;
-  auto handler = [this, path](const ActivityResult& res) {
+  const bool inTrash = crosshatch::trash::isPath(path.c_str());
+  const bool moveToTrash = SETTINGS.recycleBinEnabled && !inTrash;
+  auto handler = [this, path, moveToTrash](const ActivityResult& res) {
     if (res.isCancelled) {
       return;
     }
 
-    BookActions::clearFileMetadata(path);
-    if (!Storage.remove(path.c_str())) {
-      LOG_ERR("RBA", "Failed to delete file: %s", path.c_str());
+    bool moved = false;
+    if (!BookActions::deleteOrTrashFile(path, moved)) {
+      LOG_ERR("RBA", "Failed to delete/trash file: %s", path.c_str());
       return;
     }
 
-    RECENT_BOOKS.removeByPath(path);
+    if (moved) {
+      BookActions::drawToast(renderer, tr(STR_MOVED_TO_TRASH));
+      delay(1000);
+    }
+
     reloadAfterBookAction();
   };
 
-  const std::string heading = tr(STR_DELETE) + std::string("? ");
+  const StrId labelId =
+      inTrash ? StrId::STR_PERMANENT_DELETE : (moveToTrash ? StrId::STR_MOVE_TO_TRASH : StrId::STR_DELETE);
+  const std::string heading = BookActions::confirmationHeading(labelId);
   startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, book.title),
                          std::move(handler));
 }
@@ -347,6 +356,8 @@ void RecentBooksActivity::showBookActionMenu(const size_t bookIndex, const bool 
           case FileBrowserAction::SendNearby:
             activityManager.goToNearbyBookSend(book.path, false);
             return;
+          case FileBrowserAction::Restore:
+          case FileBrowserAction::EmptyTrash:
           case FileBrowserAction::PinFavorite:
           case FileBrowserAction::UnpinFavorite:
           case FileBrowserAction::PinBootFavorite:

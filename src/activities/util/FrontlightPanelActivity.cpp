@@ -250,24 +250,21 @@ void FrontlightPanelActivity::closeSyncDialog() {
 }
 
 void FrontlightPanelActivity::activateQuickAction(const int index) {
-  if (index < 0 || index >= 5) return;
+  if (index < 0 || index >= 4) return;
   drawerState.selectedAction = static_cast<int8_t>(index);
   switch (index) {
     case 0:
-      openReadingStats();
-      return;
-    case 1:
       openSyncDialog();
       return;
-    case 2:
+    case 1:
       SETTINGS.screenInverted = SETTINGS.screenInverted ? 0 : 1;
       display.setInverted(SETTINGS.screenInverted != 0);
       requestUpdate();
       return;
-    case 3:
+    case 2:
       openGlobalSettings();
       return;
-    case 4:
+    case 3:
       toggleReaderTouchscreen();
       return;
   }
@@ -438,14 +435,14 @@ void FrontlightPanelActivity::buildPanelScreen(UiApp::ScreenType& screen) {
                   bottomInset, 0});
 
   const fui::Rect actionBar = screen.takeBottom(ACTION_BAR_HEIGHT);
-  const int16_t slotWidth = static_cast<int16_t>(actionBar.width / 5);
-  const std::array<fui::BitmapRef, 5> icons = {
-      fui::bitmapFromIcon(icon_reading_stats_24), fui::bitmapFromIcon(icon_transfer_24),
-      fui::bitmapFromIcon(icon_tabler_moon_filled_24), fui::bitmapFromIcon(icon_sliders_horizontal_24),
+  const int16_t slotWidth = static_cast<int16_t>(actionBar.width / 4);
+  const std::array<fui::BitmapRef, 4> icons = {
+      fui::bitmapFromIcon(icon_transfer_24), fui::bitmapFromIcon(icon_tabler_moon_filled_24),
+      fui::bitmapFromIcon(icon_sliders_horizontal_24),
       fui::bitmapFromIcon(pendingTouchscreenDisabled ? icon_device_tablet_off_24 : icon_device_tablet_24)};
-  for (int16_t i = 0; i < 5; ++i) {
+  for (int16_t i = 0; i < 4; ++i) {
     const int16_t x = static_cast<int16_t>(actionBar.x + i * slotWidth);
-    const int16_t width = i == 4 ? static_cast<int16_t>(actionBar.right() - x) : slotWidth;
+    const int16_t width = i == 3 ? static_cast<int16_t>(actionBar.right() - x) : slotWidth;
     const fui::Rect slot{x, actionBar.y, width, actionBar.height};
     screen.frame().hit(slot, ACTION_QUICK, i);
     screen.target().bitmap(slot, icons[static_cast<size_t>(i)], fui::BitmapMode::Center);
