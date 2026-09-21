@@ -1,0 +1,7 @@
+Mode: built-in image_gen
+
+Initial prompt:
+Use case: logo-brand. Create one refined, minimal logo concept for "CrossHatch", an open-source e-reader firmware project. A compact geometric mark made from four bold intersecting strokes: two upright strokes and two gently rising crossbars, evoking both crosshatching and the structure of an open book. Distinctive, balanced, understated, optically precise; few elements and generous negative space. Pair the mark with the exact word "CrossHatch" in a beautifully kerned medium-weight modern humanist sans-serif, with capital C and H. Horizontal lockup, symbol left and wordmark right, centered on a pure white landscape canvas with generous margins. Solid black artwork only, crisp flat vector-like edges. No gradients, shadows, textures, mockups, extra text, borders, or decorative details. The mark must feel suitable for a monochrome e-ink screen and remain simple at small sizes.
+
+Final edit prompt:
+Preserve the attached CrossHatch logo symbol, typography, spelling, layout and proportions exactly. Change only the background: place this black logo on a fully opaque solid white (#FFFFFF) background across the entire canvas. The output must be a clearly visible black-on-white logo presentation with NO transparency. Keep all existing generous margins. No other additions or changes.

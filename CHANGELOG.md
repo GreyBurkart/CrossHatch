@@ -8,6 +8,7 @@
 
 ### Changed
 
+- Updated the default boot and sleep screens with the CrossHatch name and a crosshatched-book ink-drop logo.
 - Suppressed Reading Statistics UI across Home, Carousel, Reader menus, Frontlight Drawer quick actions, and Sleep Screen settings, cleanly focusing on book reading progress while strictly preserving bookmarks, reader settings, and reading progress.
 
 ## [v1.5.1] - 2026-09-10
