@@ -21,6 +21,9 @@ class XtcReaderMenuActivity final : public Activity {
     DELETE_CACHE,
     SEND_NEARBY_BOOK,
     DISABLE_TOUCHSCREEN,
+    SWITCH_DOCUMENT,
+    SET_DOCUMENT_A,
+    SET_DOCUMENT_B,
   };
 
   XtcReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string title, bool hasChapters,
@@ -35,9 +38,9 @@ class XtcReaderMenuActivity final : public Activity {
   bool allowGlobalHomeGesture() const override { return false; }
 
  private:
-  using UiHost = UiAppHost<8, 2>;
+  using UiHost = UiAppHost<12, 2>;
   using UiApp = UiHost::App;
-  static constexpr size_t kMaxMenuItems = 7;
+  static constexpr size_t kMaxMenuItems = 10;
 
   struct MenuItem {
     MenuAction action;

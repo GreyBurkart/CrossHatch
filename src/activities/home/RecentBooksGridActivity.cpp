@@ -21,6 +21,7 @@
 #include "MappedInputManager.h"
 #include "RecentBookProgress.h"
 #include "RecentBooksStore.h"
+#include "activities/home/VirtualViews.h"
 #include "activities/reader/EpubReaderActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/OptionSelectionActivity.h"
@@ -315,6 +316,10 @@ void RecentBooksGridActivity::loadPageCovers(int pageStart) {
 void RecentBooksGridActivity::onEnter() {
   Activity::onEnter();
   loadRecentBooks();
+  if (recentBooks.empty()) {
+    activityManager.goToRecentBooks(VirtualViews::ViewMode::RecentlyOpened);
+    return;
+  }
   selectorIndex = 0;
   loadedPageStart = NO_PAGE_LOADED;
   ensureProgressLoaded(selectorIndex);
@@ -360,8 +365,11 @@ int RecentBooksGridActivity::bookIndexFromPoint(const int x, const int y) {
 }
 
 void RecentBooksGridActivity::loop() {
-  if (pendingCacheDeletedFeedback && millis() - cacheDeletedFeedbackShowTime >= kActionFeedbackMs) {
-    pendingCacheDeletedFeedback = false;
+  if (pendingActionFeedback && millis() - actionFeedbackShowTime >= kActionFeedbackMs) {
+    {
+      RenderLock lock(*this);
+      pendingActionFeedback = false;
+    }
     requestUpdate();
     return;
   }
@@ -470,8 +478,10 @@ void RecentBooksGridActivity::loop() {
 void RecentBooksGridActivity::reloadAfterBookAction() {
   loadRecentBooks();
   if (recentBooks.empty()) {
-    selectorIndex = 0;
-  } else if (selectorIndex >= static_cast<int>(recentBooks.size())) {
+    activityManager.goToRecentBooks(VirtualViews::ViewMode::RecentlyOpened);
+    return;
+  }
+  if (selectorIndex >= static_cast<int>(recentBooks.size())) {
     selectorIndex = static_cast<int>(recentBooks.size()) - 1;
   }
   loadedPageStart = NO_PAGE_LOADED;
@@ -530,6 +540,7 @@ void RecentBooksGridActivity::showBookActionMenu(const int bookIndex, const bool
   const RecentBook book = recentBooks[bookIndex].book;
   std::vector<FileBrowserActionActivity::MenuItem> items =
       BookActions::buildBookActionItems(book.path, /*includeRemoveFromRecents=*/true);
+  items.insert(items.begin(), {FileBrowserAction::LibraryView, StrId::STR_LIBRARY_VIEW});
   if (BookActions::canSendNearby(book.path)) {
     items.push_back({FileBrowserAction::SendNearby, StrId::STR_SEND_NEARBY_BOOK});
   }
@@ -549,7 +560,16 @@ void RecentBooksGridActivity::showBookActionMenu(const int bookIndex, const bool
           return;
         }
 
-        switch (static_cast<FileBrowserAction>(actionResult->action)) {
+        const auto action = static_cast<FileBrowserAction>(actionResult->action);
+        StrId feedback = StrId::STR_LIBRARY_SAVE_FAILED;
+        if (BookActions::handleLibraryAction(action, book.path, feedback)) {
+          showActionFeedback(feedback);
+          return;
+        }
+        switch (action) {
+          case FileBrowserAction::LibraryView:
+            activityManager.goToRecentBooks(VirtualViews::ViewMode::RecentlyOpened);
+            return;
           case FileBrowserAction::Delete:
             promptDeleteBook(book);
             return;
@@ -562,8 +582,7 @@ void RecentBooksGridActivity::showBookActionMenu(const int bookIndex, const bool
                     if (!BookActions::clearBookCache(book.path)) {
                       LOG_ERR("RBGA", "Failed to clear book cache for: %s", book.path.c_str());
                     } else {
-                      pendingCacheDeletedFeedback = true;
-                      cacheDeletedFeedbackShowTime = millis();
+                      showActionFeedback(StrId::STR_BOOK_CACHE_DELETED);
                     }
                   }
                   reloadAfterBookAction();
@@ -649,9 +668,26 @@ void RecentBooksGridActivity::showBookActionMenu(const int bookIndex, const bool
           case FileBrowserAction::ViewClippings:
           case FileBrowserAction::DeleteBookmarks:
           case FileBrowserAction::DeleteClippings:
+          case FileBrowserAction::AssignDocA:
+          case FileBrowserAction::AssignDocB:
+          case FileBrowserAction::PinDocument:
+          case FileBrowserAction::UnpinDocument:
+          case FileBrowserAction::PinFolder:
+          case FileBrowserAction::UnpinFolder:
+          case FileBrowserAction::SwitchDoc:
             return;
         }
       });
+}
+
+void RecentBooksGridActivity::showActionFeedback(const StrId message) {
+  {
+    RenderLock lock(*this);
+    actionFeedback = message;
+    pendingActionFeedback = true;
+    actionFeedbackShowTime = millis();
+  }
+  requestUpdate();
 }
 
 void RecentBooksGridActivity::render(RenderLock&&) {
@@ -788,8 +824,8 @@ void RecentBooksGridActivity::render(RenderLock&&) {
       mappedInput.mapLabels(mappedInput.withBackArrow(tr(STR_HOME)), tr(STR_OPEN), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  if (pendingCacheDeletedFeedback) {
-    GUI.drawPopup(renderer, tr(STR_BOOK_CACHE_DELETED));
+  if (pendingActionFeedback) {
+    GUI.drawPopup(renderer, I18N.get(actionFeedback));
   }
 
   renderer.displayBuffer();

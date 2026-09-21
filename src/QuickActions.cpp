@@ -20,6 +20,19 @@ bool sleepScreenNeedsUnderlyingFrame() {
 
 }  // namespace
 
+std::string displayLabel(const uint8_t action) {
+  std::string label = I18N.get(actionLabel(action));
+  const std::string* path = action == CrossPointSettings::OPEN_PINNED_DOC      ? &SETTINGS.pinnedDocPath
+                            : action == CrossPointSettings::OPEN_PINNED_FOLDER ? &SETTINGS.pinnedFolderPath
+                                                                               : nullptr;
+  if (path && !path->empty()) {
+    const size_t slash = path->find_last_of('/');
+    label += ": ";
+    label += *path == "/" ? "/" : path->substr(slash == std::string::npos ? 0 : slash + 1);
+  }
+  return label;
+}
+
 void showConfiguredPopup(OptionPopup& popup, const std::function<void()>& requestUpdate, ActionHandler actionHandler,
                          ActionFilter actionFilter) {
   std::vector<std::string> labels;
@@ -32,7 +45,7 @@ void showConfiguredPopup(OptionPopup& popup, const std::function<void()>& reques
         (actionFilter && !actionFilter(shortcutAction))) {
       continue;
     }
-    labels.emplace_back(I18N.get(actionLabel(action)));
+    labels.emplace_back(displayLabel(action));
     actions.push_back(action);
   }
   if (actions.empty()) return;

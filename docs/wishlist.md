@@ -244,9 +244,11 @@ fit, and development ROI.
 
 #### Phase 2: Offline Reader & Library Ergonomics (High Applicability, Zero Network)
 *Focus: Maximize daily reading efficiency completely offline with low-to-moderate effort.*
-- **W6 — A/B Document Hopping**: Instant toggling between reading material and reference docs via `APP_STATE` and Quick Actions; avoids dual-engine overhead.
-- **F6 — Recently-* Virtual Views**: Automatic metadata-driven library views (Recently Added, Recently Opened, Recently Finished) adapting CrumBLE's approach without file rearrangement.
-- **W2 — Configurable Quick Actions & Pins**: Pin high-frequency destinations (`/Inbox`, Reference docs, Recent views) to physical shortcuts or popup slots.
+- **W6 — A/B Document Hopping**: Implemented with two explicitly assigned paths, reader menus, and Quick Actions/Power/Home shortcuts. Switching flushes pending progress and destroys the previous reader before loading the destination; an unavailable target or failed progress save keeps the current reader open. Opening another book does not overwrite either assignment. Switching time requires hardware measurement.
+- **F6 — Recently-* Virtual Views**: Implemented with an explicit Library view selector that preserves page navigation. Added/Finished scan up to 18 results in root and two folder levels, stopping at 2,048 entries or a two-second scan budget with incomplete-scan feedback. Added sorts by modification date, which may differ from the date copied onto SD. Finished uses explicit EPUB/XTC completion or an existing EPUB progress cache of at least 99.5%, independently of recents. Unknown dates sort last; the current simulator HAL has no file-date API. Hidden folders and `/trash` are excluded; no files are reorganized.
+- **W2 — Configurable Quick Actions & Pins**: Implemented with one document and one folder pin, plus shortcuts to all three views. Pinning fills the first empty popup slot; a full popup keeps its existing assignments. Configure additional slots/Power/Home bindings in Settings. Missing or moved targets retain their assigned paths and report unavailable.
+
+Validation: native tests plus `python3 scripts/run_simulator_smoke_test.py --env x4-pro-simulator --library` exercise saved EPUB/TXT positions, missing targets, pins, and finished history. On X4 Pro and X3/X4 hardware, verify each book resumes at its previous page after repeated A/B hops, reopen after sleep, check dated SD files in Added, and confirm a finished book remains discoverable after removal from recents. No cache reset is required; cache formats are unchanged. Physical timing, SD failure behavior, and long-running heap stability remain hardware checks.
 
 #### Phase 3: Bounded Foreground Utility Activities (F2 Adherence)
 *Focus: Expand device utility using isolated `Activity` lifecycles that guarantee clean memory teardown.*

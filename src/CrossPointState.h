@@ -8,8 +8,9 @@
 #include <string>
 
 #include "PendingOverlayResume.h"
+#include "util/DocumentSlots.h"
 
-class CrossPointState : public PersistableStore<CrossPointState> {
+class CrossPointState : public PersistableStore<CrossPointState>, public DocumentSlots {
   mutable std::mutex _mutex;
   CrossPointState() = default;
   friend class PersistableStore<CrossPointState>;
@@ -45,6 +46,7 @@ class CrossPointState : public PersistableStore<CrossPointState> {
 
   void setPendingOverlayResume(PendingOverlayResume value);
   bool consumePendingOverlayResume(PendingOverlayResume& value);
+  bool assignCurrentToSlot(const std::string& currentPath, uint8_t slot);
 
   // Returns true if idx was shown within the last checkCount picks.
   // Walks backwards from the most recently written slot.

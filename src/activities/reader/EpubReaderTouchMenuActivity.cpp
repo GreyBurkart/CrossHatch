@@ -1125,6 +1125,15 @@ void EpubReaderTouchMenuActivity::activateListIndex(const int index) {
 
 void EpubReaderTouchMenuActivity::activateRow(const RowId row) {
   switch (row) {
+    case RowId::SwitchDocument:
+      closeAndReturn(false, EpubReaderMenuAction::SWITCH_DOCUMENT, false);
+      return;
+    case RowId::SetDocumentA:
+      closeAndReturn(false, EpubReaderMenuAction::SET_DOCUMENT_A, false);
+      return;
+    case RowId::SetDocumentB:
+      closeAndReturn(false, EpubReaderMenuAction::SET_DOCUMENT_B, false);
+      return;
     case RowId::ReaderFont:
       openPane(ReaderDrawerPane::ReaderFont);
       return;
@@ -1830,6 +1839,13 @@ const char* EpubReaderTouchMenuActivity::paneTitle() const {
 
 const char* EpubReaderTouchMenuActivity::rowLabel(const RowId row) const {
   switch (row) {
+    case RowId::SwitchDocument:
+      return APP_STATE.targetDocumentSlot(APP_STATE.openEpubPath) == 0 ? tr(STR_SWITCH_TO_DOC_A)
+                                                                       : tr(STR_SWITCH_TO_DOC_B);
+    case RowId::SetDocumentA:
+      return tr(STR_SET_DOC_A);
+    case RowId::SetDocumentB:
+      return tr(STR_SET_DOC_B);
     case RowId::ReaderFont:
       return tr(STR_READER_FONT);
     case RowId::DictionaryFont:
@@ -1989,6 +2005,9 @@ bool EpubReaderTouchMenuActivity::rowShowsNavigationCaret(const RowId row) const
   char value[64] = {};
   if (rowValue(row, value, sizeof(value)) != nullptr) return false;
   switch (row) {
+    case RowId::SwitchDocument:
+    case RowId::SetDocumentA:
+    case RowId::SetDocumentB:
     case RowId::BookmarkToggle:
     case RowId::ToggleCompleted:
     case RowId::Screenshot:

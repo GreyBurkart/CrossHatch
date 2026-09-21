@@ -2188,6 +2188,7 @@ void EpubReaderActivity::onEnter() {
 
   // Save current epub as last opened epub and add to recent books
   APP_STATE.openEpubPath = epub->getPath();
+  APP_STATE.noteOpenedDocument(APP_STATE.openEpubPath);
   APP_STATE.saveToFile();
   const RecentBook::CoverState coverState =
       epub->hasCoverImage() ? RecentBook::CoverState::Unknown : RecentBook::CoverState::Missing;
@@ -2199,6 +2200,12 @@ void EpubReaderActivity::onEnter() {
 
   // Trigger first update
   requestUpdate();
+}
+
+bool EpubReaderActivity::prepareForDocumentSwitch() {
+  const bool saved = epub && (footnoteDepth > 0 ? saveFootnoteOriginProgress() : flushQueuedProgress());
+  if (!saved) LOG_ERR("ERS", "Could not save reading position before document switch");
+  return saved;
 }
 
 void EpubReaderActivity::onExit() {
@@ -3454,6 +3461,18 @@ void EpubReaderActivity::openWordSelect(bool framebufferContainsPage, int initia
 void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action, const bool returnToReaderMenu,
                                              const PendingOverlayResume* replacementResume) {
   switch (action) {
+    case EpubReaderMenuActivity::MenuAction::SWITCH_DOCUMENT:
+      switchDocumentSlot();
+      break;
+    case EpubReaderMenuActivity::MenuAction::SET_DOCUMENT_A:
+    case EpubReaderMenuActivity::MenuAction::SET_DOCUMENT_B:
+      if (epub) {
+        const bool slotB = action == EpubReaderMenuActivity::MenuAction::SET_DOCUMENT_B;
+        const bool saved = APP_STATE.assignCurrentToSlot(epub->getPath(), slotB ? 1 : 0);
+        showLibraryShortcutMessage(saved ? (slotB ? StrId::STR_SET_DOC_B : StrId::STR_SET_DOC_A)
+                                         : StrId::STR_LIBRARY_SAVE_FAILED);
+      }
+      break;
     case EpubReaderMenuActivity::MenuAction::STATUS_BAR_SETTINGS:
       break;
     case EpubReaderMenuActivity::MenuAction::SEND_NEARBY_BOOK: {
@@ -4710,6 +4729,12 @@ bool EpubReaderActivity::handleShortcutAction(const uint8_t rawAction) {
       openQuickActionsPopup();
       return true;
     case CrossPointSettings::SHORT_PWRBTN::QUICK_LOCK:
+    case CrossPointSettings::SHORT_PWRBTN::AB_DOCUMENT_HOP:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_DOC:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_FOLDER:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_OPENED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_ADDED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_FINISHED:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_FRONTLIGHT:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_TOUCHSCREEN:
       return handleGlobalPowerButtonAction(action);
@@ -4795,6 +4820,12 @@ bool EpubReaderActivity::handleShortcutAction(const CrossPointSettings::SHORT_PW
     case CrossPointSettings::SHORT_PWRBTN::QUICK_ACTIONS:
       openQuickActionsPopup();
       return true;
+    case CrossPointSettings::SHORT_PWRBTN::AB_DOCUMENT_HOP:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_DOC:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_FOLDER:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_OPENED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_ADDED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_FINISHED:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_FRONTLIGHT:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_TOUCHSCREEN:
       return handleGlobalPowerButtonAction(action);
@@ -4859,6 +4890,7 @@ void EpubReaderActivity::executeFootnoteQuickAction(const bool suppressInitialPo
 }
 
 bool EpubReaderActivity::executeShortPowerButtonAction() {
+  if (isLibraryShortcutAction(static_cast<CrossPointSettings::SHORT_PWRBTN>(SETTINGS.shortPwrBtn))) return false;
   if (!mappedInput.wasReleased(MappedInputManager::Button::Power) ||
       mappedInput.getHeldTime() >= SETTINGS.getPowerButtonLongPressDuration()) {
     return false;
@@ -4935,7 +4967,7 @@ bool EpubReaderActivity::executeShortPowerButtonAction() {
       return true;
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_FRONTLIGHT:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_TOUCHSCREEN:
-      return handleGlobalPowerButtonAction(static_cast<CrossPointSettings::SHORT_PWRBTN>(SETTINGS.longPwrBtn));
+      return handleGlobalPowerButtonAction(static_cast<CrossPointSettings::SHORT_PWRBTN>(SETTINGS.shortPwrBtn));
     default:
       return false;
   }
@@ -4966,6 +4998,7 @@ bool EpubReaderActivity::consumeLongPowerButtonHold() {
 }
 
 bool EpubReaderActivity::executeLongPowerButtonAction() {
+  if (isLibraryShortcutAction(static_cast<CrossPointSettings::SHORT_PWRBTN>(SETTINGS.longPwrBtn))) return false;
   if ((SETTINGS.longPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN ||
        SETTINGS.longPwrBtn == CrossPointSettings::SHORT_PWRBTN::PREVIOUS_PAGE) ||
       !consumeLongPowerButtonHold()) {

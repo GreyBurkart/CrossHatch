@@ -23,6 +23,7 @@
 #include "SettingsList.h"
 #include "fontIds.h"
 #include "util/FrontlightSchedule.h"
+#include "util/LibraryPins.h"
 #include "util/TwoFingerSwipe.h"
 
 void readAndValidate(FsFile& file, uint8_t& member, const uint8_t maxValue) {
@@ -231,7 +232,8 @@ bool isValidQuickActionSlot(const uint8_t action) {
   return action < CrossPointSettings::QUICK_ACTION_SLOT_ACTION_COUNT ||
          action == CrossPointSettings::TOGGLE_HOME_BUTTON_IN_READER ||
          action == CrossPointSettings::TOGGLE_FRONTLIGHT || action == CrossPointSettings::TOGGLE_TOUCHSCREEN ||
-         action == CrossPointSettings::PREVIOUS_PAGE || action == CrossPointSettings::NEARBY_POSITION_SYNC;
+         action == CrossPointSettings::PREVIOUS_PAGE || action == CrossPointSettings::NEARBY_POSITION_SYNC ||
+         (action >= CrossPointSettings::AB_DOCUMENT_HOP && action <= CrossPointSettings::VIEW_RECENTLY_FINISHED);
 }
 
 uint8_t migrateTiltDirectionValue(const uint8_t direction) {
@@ -474,6 +476,8 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
     quickActionSlotsJson.add(action);
   }
   doc["quickActionsTrigger"] = quickActionsTrigger;
+  doc["pinnedDocPath"] = pinnedDocPath;
+  doc["pinnedFolderPath"] = pinnedFolderPath;
   doc["language"] = (language < getLanguageCount()) ? LANGUAGE_CODES[language] : "EN";
   if (keyboardLayouts != 0) doc["keyboardLayouts"] = keyboardLayouts;
   doc["tiltPageTurnDirectionSchema"] = TILT_DIRECTION_SCHEMA_CURRENT;
@@ -707,6 +711,14 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   dictionarySdFontFamilyName[sizeof(dictionarySdFontFamilyName) - 1] = '\0';
   dictionaryFontPointSize = doc["dictionaryFontSize"] | static_cast<uint8_t>(0);
   const JsonArrayConst quickActionSlotsJson = doc["quickActionSlots"].as<JsonArrayConst>();
+  // Reject malformed/oversized stored paths whole; never open a truncated path.
+  const auto readPinnedPath = [&doc](const char* key) -> std::string {
+    const JsonString path = doc[key].as<JsonString>();
+    if (!path || !LibraryPins::validPath({path.c_str(), path.size()})) return {};
+    return {path.c_str(), path.size()};
+  };
+  pinnedDocPath = readPinnedPath("pinnedDocPath");
+  pinnedFolderPath = readPinnedPath("pinnedFolderPath");
   if (!quickActionSlotsJson.isNull()) {
     for (size_t i = 0; i < std::size(quickActionSlots); ++i) {
       const uint8_t action = quickActionSlotsJson[i] | static_cast<uint8_t>(IGNORE);

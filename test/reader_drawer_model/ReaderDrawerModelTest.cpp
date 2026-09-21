@@ -70,9 +70,12 @@ TEST(ReaderDrawerModel, CatalogOrderAndConditionalRowsMatchTouchDesign) {
   EXPECT_EQ(layout.items[3], ReaderDrawerCatalogItem::Images);
 
   const auto& minimalMore = minimal[static_cast<size_t>(ReaderDrawerTab::More)];
-  EXPECT_EQ(minimalMore.count, 3);
+  EXPECT_EQ(minimalMore.count, 6);
   EXPECT_EQ(minimalMore.items[0], ReaderDrawerCatalogItem::SelectChapter);
   EXPECT_EQ(minimalMore.items[2], ReaderDrawerCatalogItem::AutoPageTurn);
+  EXPECT_EQ(minimalMore.items[3], ReaderDrawerCatalogItem::SwitchDocument);
+  EXPECT_EQ(minimalMore.items[4], ReaderDrawerCatalogItem::SetDocumentA);
+  EXPECT_EQ(minimalMore.items[5], ReaderDrawerCatalogItem::SetDocumentB);
 
   const auto& minimalLocation = minimal[static_cast<size_t>(ReaderDrawerTab::Location)];
   EXPECT_EQ(minimalLocation.count, 4);
@@ -81,12 +84,16 @@ TEST(ReaderDrawerModel, CatalogOrderAndConditionalRowsMatchTouchDesign) {
 
   const ReaderDrawerCatalog complete = makeReaderDrawerCatalog({true, true, true, true, true});
   const auto& more = complete[static_cast<size_t>(ReaderDrawerTab::More)];
-  EXPECT_EQ(more.count, 6);
+  EXPECT_EQ(more.count, 9);
   EXPECT_EQ(more.items[0], ReaderDrawerCatalogItem::Lookup);
   EXPECT_EQ(more.items[1], ReaderDrawerCatalogItem::LookupHistory);
   EXPECT_EQ(more.items[2], ReaderDrawerCatalogItem::SelectChapter);
   EXPECT_EQ(more.items[3], ReaderDrawerCatalogItem::GoToPercent);
   EXPECT_EQ(more.items[4], ReaderDrawerCatalogItem::AutoPageTurn);
+  EXPECT_EQ(more.items[5], ReaderDrawerCatalogItem::Footnotes);
+  EXPECT_EQ(more.items[6], ReaderDrawerCatalogItem::SwitchDocument);
+  EXPECT_EQ(more.items[7], ReaderDrawerCatalogItem::SetDocumentA);
+  EXPECT_EQ(more.items[8], ReaderDrawerCatalogItem::SetDocumentB);
 
   const auto& location = complete[static_cast<size_t>(ReaderDrawerTab::Location)];
   EXPECT_EQ(location.count, 7);

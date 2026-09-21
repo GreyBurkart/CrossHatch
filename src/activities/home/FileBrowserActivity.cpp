@@ -37,7 +37,7 @@ namespace fui = freeink::ui;
 
 namespace {
 constexpr unsigned long GO_HOME_MS = 1000;
-constexpr unsigned long COMPLETED_FEEDBACK_MS = 1000;
+constexpr unsigned long ACTION_FEEDBACK_MS = 1500;
 constexpr int ROOT_HINT_GAP = 20;
 constexpr size_t NAME_BUFFER_SIZE = 500;
 constexpr fui::ActionId ACTION_ROW = 1;
@@ -603,11 +603,15 @@ void FileBrowserActivity::promptDeleteDirectory(const std::string& fullPath, con
 void FileBrowserActivity::showDirectoryActionMenu(const std::string& entry, bool ignoreInitialConfirmRelease) {
   const std::string fullPath = normalizeDirectoryPath(buildFullPath(basepath, entry));
   std::vector<FileBrowserActionActivity::MenuItem> items;
+  items.reserve(3);
   if (crosshatch::trash::isDirectory(fullPath.c_str())) {
     items.push_back({FileBrowserAction::EmptyTrash, StrId::STR_EMPTY_TRASH});
   } else if (crosshatch::trash::isPath(fullPath.c_str())) {
     items.push_back({FileBrowserAction::Delete, StrId::STR_PERMANENT_DELETE});
   } else {
+    const bool pinned = SETTINGS.pinnedFolderPath == fullPath;
+    items.push_back({pinned ? FileBrowserAction::UnpinFolder : FileBrowserAction::PinFolder,
+                     pinned ? StrId::STR_UNPIN_FOLDER : StrId::STR_PIN_FOLDER});
     const bool useDefaultFolders = isDefaultSleepFolderPath(fullPath) || isPreferredSleepFolder(fullPath);
     items.push_back({useDefaultFolders ? FileBrowserAction::ClearSleepFolder : FileBrowserAction::SetSleepFolder,
                      useDefaultFolders ? StrId::STR_USE_DEFAULT_SLEEP_FOLDERS : StrId::STR_SET_AS_SLEEP_FOLDER});
@@ -624,6 +628,11 @@ void FileBrowserActivity::showDirectoryActionMenu(const std::string& entry, bool
 
                            const auto action =
                                static_cast<FileBrowserAction>(std::get<FileBrowserActionResult>(result.data).action);
+                           StrId feedback = StrId::STR_LIBRARY_SAVE_FAILED;
+                           if (BookActions::handleLibraryAction(action, fullPath, feedback)) {
+                             showActionFeedback(feedback);
+                             return;
+                           }
                            switch (action) {
                              case FileBrowserAction::EmptyTrash:
                                promptEmptyTrash();
@@ -653,6 +662,14 @@ void FileBrowserActivity::showDirectoryActionMenu(const std::string& entry, bool
                              case FileBrowserAction::EpubRenderMode:
                              case FileBrowserAction::ResetReaderSettings:
                              case FileBrowserAction::SendNearby:
+                             case FileBrowserAction::AssignDocA:
+                             case FileBrowserAction::AssignDocB:
+                             case FileBrowserAction::PinDocument:
+                             case FileBrowserAction::UnpinDocument:
+                             case FileBrowserAction::PinFolder:
+                             case FileBrowserAction::UnpinFolder:
+                             case FileBrowserAction::SwitchDoc:
+                             case FileBrowserAction::LibraryView:
                                return;
                            }
                          });
@@ -797,6 +814,11 @@ void FileBrowserActivity::showFileActionMenu(const std::string& entry, bool igno
         }
 
         const auto action = static_cast<FileBrowserAction>(std::get<FileBrowserActionResult>(result.data).action);
+        StrId feedback = StrId::STR_LIBRARY_SAVE_FAILED;
+        if (BookActions::handleLibraryAction(action, fullPath, feedback)) {
+          showActionFeedback(feedback);
+          return;
+        }
         switch (action) {
           case FileBrowserAction::Restore:
             promptRestoreFile(fullPath, entry);
@@ -859,10 +881,10 @@ void FileBrowserActivity::showFileActionMenu(const std::string& entry, bool igno
                   requestUpdate();
                 });
             return;
-          case FileBrowserAction::ToggleCompleted:
-            if (BookActions::toggleBookCompleted(fullPath, getFileName(entry), completedFeedbackIsFinished)) {
-              pendingCompletedFeedback = true;
-              completedFeedbackShowTime = millis();
+          case FileBrowserAction::ToggleCompleted: {
+            bool completed = false;
+            if (BookActions::toggleBookCompleted(fullPath, getFileName(entry), completed)) {
+              showActionFeedback(completed ? StrId::STR_MARKED_FINISHED : StrId::STR_MARKED_UNFINISHED);
             }
             {
               RenderLock lock(*this);
@@ -871,6 +893,7 @@ void FileBrowserActivity::showFileActionMenu(const std::string& entry, bool igno
             }
             requestUpdate(true);
             return;
+          }
           case FileBrowserAction::EpubRenderMode: {
             const uint8_t currentIndex =
                 BookActions::epubRenderModeDisplayIndex(EpubReaderActivity::loadBookRenderMode(fullPath));
@@ -920,9 +943,27 @@ void FileBrowserActivity::showFileActionMenu(const std::string& entry, bool igno
           case FileBrowserAction::ViewClippings:
           case FileBrowserAction::DeleteBookmarks:
           case FileBrowserAction::DeleteClippings:
+          case FileBrowserAction::AssignDocA:
+          case FileBrowserAction::AssignDocB:
+          case FileBrowserAction::PinDocument:
+          case FileBrowserAction::UnpinDocument:
+          case FileBrowserAction::PinFolder:
+          case FileBrowserAction::UnpinFolder:
+          case FileBrowserAction::SwitchDoc:
+          case FileBrowserAction::LibraryView:
             return;
         }
       });
+}
+
+void FileBrowserActivity::showActionFeedback(const StrId message) {
+  {
+    RenderLock lock(*this);
+    actionFeedback = message;
+    pendingActionFeedback = true;
+    actionFeedbackShowTime = millis();
+  }
+  requestUpdate();
 }
 
 void FileBrowserActivity::toggleHiddenFiles() {
@@ -1061,14 +1102,17 @@ void FileBrowserActivity::loop() {
     navigateBack();
     return;
   }
-  if (pendingCompletedFeedback) {
-    const bool timedOut = (millis() - completedFeedbackShowTime) >= COMPLETED_FEEDBACK_MS;
+  if (pendingActionFeedback) {
+    const bool timedOut = (millis() - actionFeedbackShowTime) >= ACTION_FEEDBACK_MS;
     const bool navPressed = mappedInput.wasReleased(MappedInputManager::Button::Left) ||
                             mappedInput.wasReleased(MappedInputManager::Button::Right) ||
                             mappedInput.wasReleased(MappedInputManager::Button::Up) ||
                             mappedInput.wasReleased(MappedInputManager::Button::Down);
     if (timedOut || navPressed) {
-      pendingCompletedFeedback = false;
+      {
+        RenderLock lock(*this);
+        pendingActionFeedback = false;
+      }
       requestUpdate();
       return;
     }
@@ -1501,8 +1545,8 @@ void FileBrowserActivity::render(RenderLock&&) {
     renderer.drawText(SMALL_FONT_ID, pageWidth - metrics.contentSidePadding - hintWidth, pathY, hint.c_str());
   }
 
-  if (pendingCompletedFeedback) {
-    GUI.drawPopup(renderer, completedFeedbackIsFinished ? tr(STR_MARKED_FINISHED) : tr(STR_MARKED_UNFINISHED));
+  if (pendingActionFeedback) {
+    GUI.drawPopup(renderer, I18N.get(actionFeedback));
   }
 
   renderer.displayBuffer();

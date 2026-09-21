@@ -3,6 +3,7 @@
 #include <FileIndex.h>
 #include <FreeInkApp.h>
 #include <FreeInkUIGfxRenderer.h>
+#include <I18n.h>
 
 #include <array>
 #include <atomic>
@@ -42,6 +43,7 @@ class FileBrowserActivity final : public Activity {
   void unpinBootFavorite();
   bool isPinnedBootFavorite(const std::string& fullPath) const;
   void showFileActionMenu(const std::string& entry, bool ignoreInitialConfirmRelease = false);
+  void showActionFeedback(StrId message);
 
   ButtonNavigator buttonNavigator;
 
@@ -51,9 +53,9 @@ class FileBrowserActivity final : public Activity {
   bool lockLongPressBack = false;
   bool longPressBackHandled = false;
   bool longPressConfirmHandled = false;
-  bool pendingCompletedFeedback = false;
-  bool completedFeedbackIsFinished = false;
-  unsigned long completedFeedbackShowTime = 0UL;
+  bool pendingActionFeedback = false;
+  StrId actionFeedback = StrId::STR_MARKED_FINISHED;
+  unsigned long actionFeedbackShowTime = 0UL;
   // True when this activity was entered while Confirm was already held; we must swallow the next
   // release so we don't immediately auto-open the first entry.
   bool lockNextConfirmRelease = false;

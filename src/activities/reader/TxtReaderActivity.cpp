@@ -135,6 +135,7 @@ void TxtReaderActivity::onEnter() {
   auto filePath = txt->getPath();
   auto fileName = filePath.substr(filePath.rfind('/') + 1);
   APP_STATE.openEpubPath = filePath;
+  APP_STATE.noteOpenedDocument(APP_STATE.openEpubPath);
   APP_STATE.saveToFile();
   SleepCoverAssets::prepareTxt(*txt);
   const std::string coverBmpPath = Storage.exists(txt->getCoverBmpPath().c_str()) ? txt->getCoverBmpPath() : "";
@@ -144,6 +145,12 @@ void TxtReaderActivity::onEnter() {
 
   // Trigger first update
   requestUpdate();
+}
+
+bool TxtReaderActivity::prepareForDocumentSwitch() {
+  const bool saved = txt && flushQueuedProgress();
+  if (!saved) LOG_ERR("TRS", "Could not save reading position before document switch");
+  return saved;
 }
 
 void TxtReaderActivity::onExit() {
@@ -170,6 +177,13 @@ void TxtReaderActivity::onExit() {
 void TxtReaderActivity::openReaderMenu() {
   if (!txt) return;
   std::vector<FileBrowserActionActivity::MenuItem> items;
+  // Four fixed rows, allocated once while the menu is open.
+  items.reserve(4);
+  items.push_back({FileBrowserAction::SwitchDoc, APP_STATE.targetDocumentSlot(txt->getPath()) == 0
+                                                     ? StrId::STR_SWITCH_TO_DOC_A
+                                                     : StrId::STR_SWITCH_TO_DOC_B});
+  items.push_back({FileBrowserAction::AssignDocA, StrId::STR_SET_DOC_A});
+  items.push_back({FileBrowserAction::AssignDocB, StrId::STR_SET_DOC_B});
   items.push_back({FileBrowserAction::SendNearby, StrId::STR_SEND_NEARBY_BOOK});
   auto menu = makeUniqueNoThrow<FileBrowserActionActivity>(renderer, mappedInput, txt->getTitle(), std::move(items));
   if (!menu) {
@@ -178,13 +192,30 @@ void TxtReaderActivity::openReaderMenu() {
   }
   startActivityForResult(std::move(menu), [this](const ActivityResult& result) {
     const auto* action = std::get_if<FileBrowserActionResult>(&result.data);
-    if (!result.isCancelled && action &&
-        static_cast<FileBrowserAction>(action->action) == FileBrowserAction::SendNearby) {
-      saveProgress(currentPage);
-      activityManager.goToNearbyBookSend(txt ? txt->getPath() : std::string{}, true);
-    } else {
+    if (result.isCancelled || !action || !txt) {
       requestUpdate();
+      return;
     }
+    switch (static_cast<FileBrowserAction>(action->action)) {
+      case FileBrowserAction::SwitchDoc:
+        switchDocumentSlot();
+        break;
+      case FileBrowserAction::AssignDocA:
+      case FileBrowserAction::AssignDocB: {
+        const bool slotB = static_cast<FileBrowserAction>(action->action) == FileBrowserAction::AssignDocB;
+        const bool saved = APP_STATE.assignCurrentToSlot(txt->getPath(), slotB ? 1 : 0);
+        showLibraryShortcutMessage(saved ? (slotB ? StrId::STR_SET_DOC_B : StrId::STR_SET_DOC_A)
+                                         : StrId::STR_LIBRARY_SAVE_FAILED);
+        break;
+      }
+      case FileBrowserAction::SendNearby:
+        saveProgress(currentPage);
+        activityManager.goToNearbyBookSend(txt->getPath(), true);
+        break;
+      default:
+        break;
+    }
+    requestUpdate();
   });
 }
 
@@ -472,6 +503,12 @@ bool TxtReaderActivity::supportsQuickAction(const CrossPointSettings::SHORT_PWRB
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_DARK_MODE:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_FONT:
     case CrossPointSettings::SHORT_PWRBTN::FILE_BROWSER:
+    case CrossPointSettings::SHORT_PWRBTN::AB_DOCUMENT_HOP:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_DOC:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_FOLDER:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_OPENED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_ADDED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_FINISHED:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_FRONTLIGHT:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_TOUCHSCREEN:
       return true;
@@ -512,6 +549,12 @@ bool TxtReaderActivity::executeReaderShortcutAction(const CrossPointSettings::SH
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_HOME_BUTTON_IN_READER:
       toggleHomeButtonInReader();
       return true;
+    case CrossPointSettings::SHORT_PWRBTN::AB_DOCUMENT_HOP:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_DOC:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_FOLDER:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_OPENED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_ADDED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_FINISHED:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_FRONTLIGHT:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_TOUCHSCREEN:
       return handleGlobalPowerButtonAction(action);
@@ -523,11 +566,13 @@ bool TxtReaderActivity::executeReaderShortcutAction(const CrossPointSettings::SH
 bool TxtReaderActivity::executePowerButtonAction() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Power) &&
       mappedInput.getHeldTime() < SETTINGS.getPowerButtonLongPressDuration()) {
-    return executeReaderShortcutAction(static_cast<CrossPointSettings::SHORT_PWRBTN>(SETTINGS.shortPwrBtn));
+    const auto shortPowerAction = static_cast<CrossPointSettings::SHORT_PWRBTN>(SETTINGS.shortPwrBtn);
+    return !isLibraryShortcutAction(shortPowerAction) && executeReaderShortcutAction(shortPowerAction);
   }
 
   const auto longPowerAction = static_cast<CrossPointSettings::SHORT_PWRBTN>(SETTINGS.longPwrBtn);
-  if (longPowerAction == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN || !consumeLongPowerButtonHold()) {
+  if (isLibraryShortcutAction(longPowerAction) || longPowerAction == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN ||
+      !consumeLongPowerButtonHold()) {
     return false;
   }
 

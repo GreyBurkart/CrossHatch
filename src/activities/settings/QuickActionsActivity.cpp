@@ -80,8 +80,8 @@ void QuickActionsActivity::showOverview() {
                     I18N.get(triggerLabels[static_cast<uint8_t>(draftTrigger)]));
   for (uint8_t i = 0; i < 5; ++i) {
     const uint8_t action = draftSlots[i];
-    const char* label =
-        QuickActions::isQuickActionSlotActionAvailable(action) ? I18N.get(QuickActions::actionLabel(action)) : "-";
+    const std::string label =
+        QuickActions::isQuickActionSlotActionAvailable(action) ? QuickActions::displayLabel(action) : "-";
     rows.emplace_back(std::to_string(i + 1) + ". " + label);
   }
   popup.showConfirmed(
@@ -118,7 +118,7 @@ void QuickActionsActivity::editSlot(uint8_t slot) {
   std::vector<std::string> labels;
   labels.reserve(actions.size());
   std::transform(actions.begin(), actions.end(), std::back_inserter(labels),
-                 [](const uint8_t action) { return I18N.get(QuickActions::actionLabel(action)); });
+                 [](const uint8_t action) { return QuickActions::displayLabel(action); });
   const auto currentIt = std::find(actions.begin(), actions.end(), draftSlots[slot]);
   const uint8_t current = currentIt == actions.end() ? 0 : static_cast<uint8_t>(currentIt - actions.begin());
   popup.show(StrId::STR_QUICK_ACTIONS, labels, current, [this, slot, actions](int selected) {

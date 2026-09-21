@@ -10,6 +10,7 @@
 #include "ClippingStore.h"
 #include "CrossInkHalFrontlight.h"
 #include "CrossPointSettings.h"
+#include "CrossPointState.h"
 #include "EpubReaderClippingListActivity.h"
 #include "MappedInputManager.h"
 #include "ReaderUtils.h"
@@ -234,7 +235,7 @@ EpubReaderMenuActivity::TabMenuItems EpubReaderMenuActivity::buildMenuItems(
   auto& bookmarkItems = items[BOOKMARKS_TAB_INDEX];
   auto& settingsItems = items[SETTINGS_TAB_INDEX];
 
-  mainItems.reserve(9 + (hasFootnotes ? 1u : 0u) + (hasDictionary ? 2u : 0u));
+  mainItems.reserve(12 + (hasFootnotes ? 1u : 0u) + (hasDictionary ? 2u : 0u));
   bookmarkItems.reserve(9 + (hasBookmarks ? 2u : 0u) + (hasClippings ? 1u : 0u));
   settingsItems.reserve(6);
 
@@ -249,6 +250,11 @@ EpubReaderMenuActivity::TabMenuItems EpubReaderMenuActivity::buildMenuItems(
   mainItems.push_back({MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT});
   mainItems.push_back({MenuAction::AUTO_PAGE_TURN, StrId::STR_AUTO_TURN_INTERVAL_SECONDS});
   mainItems.push_back({MenuAction::READER_OPTIONS, StrId::STR_READER_OPTIONS});
+  mainItems.push_back({MenuAction::SWITCH_DOCUMENT, APP_STATE.targetDocumentSlot(APP_STATE.openEpubPath) == 0
+                                                        ? StrId::STR_SWITCH_TO_DOC_A
+                                                        : StrId::STR_SWITCH_TO_DOC_B});
+  mainItems.push_back({MenuAction::SET_DOCUMENT_A, StrId::STR_SET_DOC_A});
+  mainItems.push_back({MenuAction::SET_DOCUMENT_B, StrId::STR_SET_DOC_B});
   bookmarkItems.push_back({MenuAction::SAVE_CLIPPING, StrId::STR_SAVE_CLIPPING});
   if (hasClippings) {
     bookmarkItems.push_back({MenuAction::VIEW_CLIPPINGS, StrId::STR_VIEW_CLIPPINGS});

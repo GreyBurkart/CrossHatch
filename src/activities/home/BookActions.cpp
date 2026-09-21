@@ -11,6 +11,7 @@
 #include <Xtc.h>
 
 #include <cstdio>
+#include <cstring>
 
 #include "BookmarkStore.h"
 #include "ClippingStore.h"
@@ -25,12 +26,33 @@
 #include "fontIds.h"
 #include "util/BookCacheUtils.h"
 #include "util/BookMoveUtils.h"
+#include "util/LibraryPins.h"
 
 namespace BookActions {
 namespace {
 
 bool hasReadingStats(const std::string& path) {
   return FsHelpers::hasEpubExtension(path) || FsHelpers::hasXtcExtension(path);
+}
+
+bool isReaderDocument(const std::string& path) {
+  return FsHelpers::hasEpubExtension(path) || FsHelpers::hasXtcExtension(path) || FsHelpers::hasTxtExtension(path) ||
+         FsHelpers::hasMarkdownExtension(path);
+}
+
+bool validLibraryTarget(const std::string& path, const bool directory) {
+  if (!LibraryPins::validPath(path) || crosshatch::trash::isPath(path.c_str()) ||
+      (!directory && !isReaderDocument(path))) {
+    LOG_ERR("BookActions", "Invalid library target: %s", path.c_str());
+    return false;
+  }
+  auto file = Storage.open(path.c_str());
+  const bool valid = file && file.isDirectory() == directory;
+  file.close();
+  if (!valid) {
+    LOG_ERR("BookActions", "Library target unavailable: %s", path.c_str());
+  }
+  return valid;
 }
 
 std::string bookStatsCachePath(const std::string& path) {
@@ -48,12 +70,20 @@ std::string bookStatsCachePath(const std::string& path) {
 std::vector<FileBrowserActionActivity::MenuItem> buildBookActionItems(const std::string& fullPath,
                                                                       const bool includeRemoveFromRecents) {
   std::vector<FileBrowserActionActivity::MenuItem> items;
+  // At most 12 small menu entries, retained by the popup across render calls.
+  items.reserve(12);
   if (crosshatch::trash::isPath(fullPath.c_str())) {
     items.push_back({FileBrowserAction::Restore, StrId::STR_RESTORE});
     items.push_back({FileBrowserAction::Delete, StrId::STR_PERMANENT_DELETE});
     return items;
   }
-  items.reserve(includeRemoveFromRecents ? 7 : 6);
+  if (isReaderDocument(fullPath)) {
+    items.push_back({FileBrowserAction::AssignDocA, StrId::STR_SET_DOC_A});
+    items.push_back({FileBrowserAction::AssignDocB, StrId::STR_SET_DOC_B});
+    const bool pinned = SETTINGS.pinnedDocPath == fullPath;
+    items.push_back({pinned ? FileBrowserAction::UnpinDocument : FileBrowserAction::PinDocument,
+                     pinned ? StrId::STR_UNPIN_DOCUMENT : StrId::STR_PIN_DOCUMENT});
+  }
   const StrId deleteLabel = (SETTINGS.recycleBinEnabled != 0) ? StrId::STR_MOVE_TO_TRASH : StrId::STR_DELETE;
   items.push_back({FileBrowserAction::Delete, deleteLabel});
   if (hasClearableBookCache(fullPath)) {
@@ -72,6 +102,54 @@ std::vector<FileBrowserActionActivity::MenuItem> buildBookActionItems(const std:
     items.push_back({FileBrowserAction::RemoveFromRecents, StrId::STR_REMOVE_FROM_RECENTS_ACTION});
   }
   return items;
+}
+
+bool handleLibraryAction(const FileBrowserAction action, const std::string& fullPath, StrId& feedback) {
+  bool directory = false;
+  bool pin = false;
+  switch (action) {
+    case FileBrowserAction::AssignDocA:
+    case FileBrowserAction::AssignDocB:
+      feedback = StrId::STR_LIBRARY_TARGET_MISSING;
+      if (validLibraryTarget(fullPath, false)) {
+        const bool slotB = action == FileBrowserAction::AssignDocB;
+        feedback = APP_STATE.assignCurrentToSlot(fullPath, slotB ? 1 : 0)
+                       ? (slotB ? StrId::STR_SET_DOC_B : StrId::STR_SET_DOC_A)
+                       : StrId::STR_LIBRARY_SAVE_FAILED;
+      }
+      return true;
+    case FileBrowserAction::PinDocument:
+      pin = true;
+      break;
+    case FileBrowserAction::PinFolder:
+      directory = true;
+      pin = true;
+      break;
+    case FileBrowserAction::UnpinDocument:
+      break;
+    case FileBrowserAction::UnpinFolder:
+      directory = true;
+      break;
+    default:
+      return false;
+  }
+  feedback = StrId::STR_LIBRARY_TARGET_MISSING;
+  if (pin && !validLibraryTarget(fullPath, directory)) return true;
+  if (!LibraryPins::set(SETTINGS, fullPath, directory, pin)) {
+    feedback = StrId::STR_LIBRARY_SAVE_FAILED;
+  } else if (directory) {
+    feedback = pin ? StrId::STR_FOLDER_PINNED : StrId::STR_FOLDER_UNPINNED;
+  } else {
+    feedback = pin ? StrId::STR_DOCUMENT_PINNED : StrId::STR_DOCUMENT_UNPINNED;
+  }
+  if (pin && feedback != StrId::STR_LIBRARY_SAVE_FAILED) {
+    const uint8_t pinnedAction =
+        directory ? CrossPointSettings::OPEN_PINNED_FOLDER : CrossPointSettings::OPEN_PINNED_DOC;
+    bool inPopup = false;
+    for (const uint8_t slot : SETTINGS.quickActionSlots) inPopup |= slot == pinnedAction;
+    if (!inPopup) feedback = StrId::STR_PINNED_CHOOSE_SLOT;
+  }
+  return true;
 }
 
 bool hasClearableBookCache(const std::string& path) {

@@ -87,6 +87,7 @@ class TxtReaderActivity final : public Activity {
         skipRecentBookUpdateOnEntry(skipRecentBookUpdateOnEntry) {}
   void onEnter() override;
   void onExit() override;
+  bool prepareForDocumentSwitch() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool handleTwoFingerSwipeAction(CrossPointSettings::TWO_FINGER_SWIPE_ACTION action) override;

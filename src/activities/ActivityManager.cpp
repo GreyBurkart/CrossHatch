@@ -682,6 +682,16 @@ void ActivityManager::goToRecentBooks() {
   }
 }
 
+void ActivityManager::goToRecentBooks(const VirtualViews::ViewMode view) {
+  // One foreground list owns the bounded results; no resident library index.
+  auto activity = makeUniqueNoThrow<RecentBooksActivity>(renderer, mappedInput, view);
+  if (!activity) {
+    LOG_ERR("ACT", "OOM opening library view");
+    return;
+  }
+  replaceActivity(std::move(activity));
+}
+
 void ActivityManager::goToBrowser() {
   const auto& servers = OPDS_STORE.getServers();
   // Skip the server picker when there's only one server configured
@@ -722,13 +732,21 @@ bool ActivityManager::goToOpdsServer(const uint32_t serverIndex, const bool netw
   return true;
 }
 
-void ActivityManager::goToReader(std::string path, const bool suppressBackRelease, const bool allowFastInitialRefresh,
+bool ActivityManager::goToReader(std::string path, const bool suppressBackRelease, const bool allowFastInitialRefresh,
                                  const bool cleanImageBaseOnEntry) {
+  // Allocate only the small dispatch activity now. Its onEnter opens the
+  // destination parser after replacement has destroyed the previous reader.
+  auto reader = makeUniqueNoThrow<ReaderActivity>(renderer, mappedInput, std::move(path), suppressBackRelease,
+                                                  allowFastInitialRefresh, cleanImageBaseOnEntry);
+  if (!reader) {
+    LOG_ERR("ACT", "OOM opening reader");
+    return false;
+  }
   // OPDS credentials are unrelated to local reading and may contain several
   // heap-backed strings. Home reloads them lazily when it becomes active.
   OPDS_STORE.release();
-  replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), suppressBackRelease,
-                                                   allowFastInitialRefresh, cleanImageBaseOnEntry));
+  replaceActivity(std::move(reader));
+  return true;
 }
 
 void ActivityManager::goToReaderAndRunMenuAction(std::string path, const uint8_t action) {
@@ -896,6 +914,16 @@ void ActivityManager::endGlobalSettingsEdit() {
 }
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
+
+bool ActivityManager::prepareForDocumentSwitch() {
+  RenderLock lock;
+  if (currentActivity && !currentActivity->prepareForDocumentSwitch()) return false;
+  // Menus and quick panels retain the paused reader underneath them.
+  for (auto it = stackActivities.rbegin(); it != stackActivities.rend(); ++it) {
+    if (!(*it)->prepareForDocumentSwitch()) return false;
+  }
+  return true;
+}
 
 std::string ActivityManager::getCurrentBookPath() const {
   if (currentActivity) {

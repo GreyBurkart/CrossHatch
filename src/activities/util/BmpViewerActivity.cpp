@@ -411,6 +411,14 @@ void BmpViewerActivity::showContextMenu() {
                              case FileBrowserAction::DeleteClippings:
                              case FileBrowserAction::EpubRenderMode:
                              case FileBrowserAction::ResetReaderSettings:
+                             case FileBrowserAction::AssignDocA:
+                             case FileBrowserAction::AssignDocB:
+                             case FileBrowserAction::PinDocument:
+                             case FileBrowserAction::UnpinDocument:
+                             case FileBrowserAction::PinFolder:
+                             case FileBrowserAction::UnpinFolder:
+                             case FileBrowserAction::SwitchDoc:
+                             case FileBrowserAction::LibraryView:
                                return;
                            }
                          });

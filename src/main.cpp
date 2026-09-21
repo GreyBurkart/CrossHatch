@@ -92,6 +92,8 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 #include "activities/ActivityManager.h"
 #include "activities/boot_sleep/ImageFolderIndex.h"
 #include "activities/home/BookActions.h"
+#include "activities/home/FileBrowserActivity.h"
+#include "activities/home/VirtualViews.h"
 #include "activities/reader/KOReaderSyncActivity.h"
 #include "activities/reader/ReadingStatsUtils.h"
 #include "activities/reader/StatsBackup.h"
@@ -592,9 +594,99 @@ void notifyQuickLockChanged(const bool restoringAfterWake = false) {
   }
 }
 
+void showLibraryShortcutMessage(const StrId message) {
+  {
+    RenderLock lock;
+    BookActions::drawToast(renderer, I18N.get(message));
+  }
+  delay(1000);
+  activityManager.requestUpdate();
+}
+
+namespace {
+bool libraryTargetExists(const std::string& path, const bool directory) {
+  if (path.empty() || path.front() != '/') return false;
+  if (!directory && !(FsHelpers::hasEpubExtension(path) || FsHelpers::hasXtcExtension(path) ||
+                      FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)))
+    return false;
+  auto file = Storage.open(path.c_str());
+  if (!file) return false;
+  const bool matches = file.isDirectory() == directory;
+  file.close();
+  return matches;
+}
+
+bool prepareLibraryNavigation() {
+  if (activityManager.prepareForDocumentSwitch()) return true;
+  showLibraryShortcutMessage(StrId::STR_SAVE_PROGRESS_FAILED);
+  return false;
+}
+}  // namespace
+
+bool switchDocumentSlot() {
+  const std::string current = activityManager.isReaderActivity() ? activityManager.getCurrentBookPath() : std::string{};
+  const std::string target = APP_STATE.getTargetHopPath(current);
+  if (target.empty()) {
+    const bool targetB = APP_STATE.targetDocumentSlot(current) == 1;
+    showLibraryShortcutMessage(targetB ? StrId::STR_DOC_B_NOT_SET : StrId::STR_DOC_A_NOT_SET);
+    return true;
+  }
+  if (target == current) return true;
+  if (!libraryTargetExists(target, false)) {
+    LOG_ERR("LIBRARY", "Document slot target unavailable: %s", target.c_str());
+    showLibraryShortcutMessage(StrId::STR_LIBRARY_TARGET_MISSING);
+    return true;
+  }
+  if (prepareLibraryNavigation() && !activityManager.goToReader(target)) {
+    showLibraryShortcutMessage(StrId::STR_MEMORY_ERROR);
+  }
+  return true;
+}
+
 bool handleGlobalPowerButtonAction(const CrossPointSettings::SHORT_PWRBTN action,
                                    const QuickLockTrigger quickLockTrigger) {
   switch (action) {
+    case CrossPointSettings::AB_DOCUMENT_HOP:
+      return switchDocumentSlot();
+    case CrossPointSettings::OPEN_PINNED_DOC: {
+      const auto& path = SETTINGS.pinnedDocPath;
+      if (activityManager.isReaderActivity() && !path.empty() && path == activityManager.getCurrentBookPath())
+        return true;
+      if (!libraryTargetExists(path, false)) {
+        LOG_ERR("LIBRARY", "Pinned document unavailable: %s", path.c_str());
+        showLibraryShortcutMessage(path.empty() ? StrId::STR_PINNED_DOC_NOT_SET : StrId::STR_LIBRARY_TARGET_MISSING);
+      } else if (prepareLibraryNavigation() && !activityManager.goToReader(path)) {
+        showLibraryShortcutMessage(StrId::STR_MEMORY_ERROR);
+      }
+      return true;
+    }
+    case CrossPointSettings::OPEN_PINNED_FOLDER: {
+      const auto& path = SETTINGS.pinnedFolderPath;
+      if (!libraryTargetExists(path, true)) {
+        LOG_ERR("LIBRARY", "Pinned folder unavailable: %s", path.c_str());
+        showLibraryShortcutMessage(path.empty() ? StrId::STR_PINNED_FOLDER_NOT_SET : StrId::STR_LIBRARY_TARGET_MISSING);
+        return true;
+      }
+      // Only the foreground browser owns its listing; it loads on entry.
+      if (!prepareLibraryNavigation()) return true;
+      auto browser = makeUniqueNoThrow<FileBrowserActivity>(renderer, mappedInputManager, path);
+      if (!browser) {
+        LOG_ERR("LIBRARY", "OOM opening pinned folder");
+        showLibraryShortcutMessage(StrId::STR_MEMORY_ERROR);
+        return true;
+      }
+      activityManager.replaceActivity(std::move(browser));
+      return true;
+    }
+    case CrossPointSettings::VIEW_RECENTLY_OPENED:
+      if (prepareLibraryNavigation()) activityManager.goToRecentBooks(VirtualViews::ViewMode::RecentlyOpened);
+      return true;
+    case CrossPointSettings::VIEW_RECENTLY_ADDED:
+      if (prepareLibraryNavigation()) activityManager.goToRecentBooks(VirtualViews::ViewMode::RecentlyAdded);
+      return true;
+    case CrossPointSettings::VIEW_RECENTLY_FINISHED:
+      if (prepareLibraryNavigation()) activityManager.goToRecentBooks(VirtualViews::ViewMode::RecentlyFinished);
+      return true;
     case CrossPointSettings::SHORT_PWRBTN::SLEEP:
       enterDeepSleep();
       return true;

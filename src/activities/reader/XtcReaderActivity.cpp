@@ -128,6 +128,7 @@ void XtcReaderActivity::onEnter() {
 
   // Save current XTC as last opened book and add to recent books
   APP_STATE.openEpubPath = xtc->getPath();
+  APP_STATE.noteOpenedDocument(APP_STATE.openEpubPath);
   APP_STATE.saveToFile();
   if (!skipRecentBookUpdateOnEntry) {
     RECENT_BOOKS.addOrUpdateBook(xtc->getPath(), xtc->getTitle(), xtc->getAuthor(), xtc->getThumbBmpPath());
@@ -136,6 +137,12 @@ void XtcReaderActivity::onEnter() {
 
   // Trigger first update
   requestUpdate();
+}
+
+bool XtcReaderActivity::prepareForDocumentSwitch() {
+  const bool saved = xtc && flushQueuedProgress();
+  if (!saved) LOG_ERR("XTR", "Could not save reading position before document switch");
+  return saved;
 }
 
 void XtcReaderActivity::onExit() {
@@ -388,11 +395,13 @@ void XtcReaderActivity::loop() {
     return;
   }
   if (powerReleased && mappedInput.getHeldTime() < SETTINGS.getPowerButtonLongPressDuration() &&
+      !isLibraryShortcutAction(static_cast<CrossPointSettings::SHORT_PWRBTN>(SETTINGS.shortPwrBtn)) &&
       executeReaderShortcutAction(static_cast<CrossPointSettings::SHORT_PWRBTN>(SETTINGS.shortPwrBtn))) {
     return;
   }
   if (!longPowerPageTurnHandled && mappedInput.isPressed(MappedInputManager::Button::Power) &&
       mappedInput.getHeldTime() >= SETTINGS.getPowerButtonLongPressDuration() &&
+      !isLibraryShortcutAction(static_cast<CrossPointSettings::SHORT_PWRBTN>(SETTINGS.longPwrBtn)) &&
       executeReaderShortcutAction(static_cast<CrossPointSettings::SHORT_PWRBTN>(SETTINGS.longPwrBtn))) {
     // Reader long-press actions execute while Power is still held. Consume its
     // later release so the app-wide shortcut dispatcher cannot run it again.
@@ -936,6 +945,23 @@ void XtcReaderActivity::deleteBookCache() {
 
 void XtcReaderActivity::onReaderMenuConfirm(const int action) {
   switch (static_cast<XtcReaderMenuActivity::MenuAction>(action)) {
+    case XtcReaderMenuActivity::MenuAction::SWITCH_DOCUMENT:
+      switchDocumentSlot();
+      resumeReadingStatsTimer("document_hop_return");
+      requestUpdate();
+      break;
+    case XtcReaderMenuActivity::MenuAction::SET_DOCUMENT_A:
+    case XtcReaderMenuActivity::MenuAction::SET_DOCUMENT_B:
+      if (xtc) {
+        const bool slotB =
+            static_cast<XtcReaderMenuActivity::MenuAction>(action) == XtcReaderMenuActivity::MenuAction::SET_DOCUMENT_B;
+        const bool saved = APP_STATE.assignCurrentToSlot(xtc->getPath(), slotB ? 1 : 0);
+        showLibraryShortcutMessage(saved ? (slotB ? StrId::STR_SET_DOC_B : StrId::STR_SET_DOC_A)
+                                         : StrId::STR_LIBRARY_SAVE_FAILED);
+      }
+      resumeReadingStatsTimer("document_slot_return");
+      requestUpdate();
+      break;
     case XtcReaderMenuActivity::MenuAction::SELECT_CHAPTER:
       openChapterSelection();
       break;
@@ -978,6 +1004,12 @@ bool XtcReaderActivity::supportsQuickAction(const CrossPointSettings::SHORT_PWRB
     case CrossPointSettings::SHORT_PWRBTN::JOIN_NETWORK:
     case CrossPointSettings::SHORT_PWRBTN::CREATE_HOTSPOT:
     case CrossPointSettings::SHORT_PWRBTN::FILE_BROWSER:
+    case CrossPointSettings::SHORT_PWRBTN::AB_DOCUMENT_HOP:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_DOC:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_FOLDER:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_OPENED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_ADDED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_FINISHED:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_FRONTLIGHT:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_TOUCHSCREEN:
       return true;
@@ -1012,6 +1044,12 @@ bool XtcReaderActivity::executeReaderShortcutAction(const CrossPointSettings::SH
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_HOME_BUTTON_IN_READER:
       toggleHomeButtonInReader();
       return true;
+    case CrossPointSettings::SHORT_PWRBTN::AB_DOCUMENT_HOP:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_DOC:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_FOLDER:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_OPENED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_ADDED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_FINISHED:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_FRONTLIGHT:
     case CrossPointSettings::SHORT_PWRBTN::TOGGLE_TOUCHSCREEN:
       return handleGlobalPowerButtonAction(action);

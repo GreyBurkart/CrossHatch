@@ -2,9 +2,16 @@
 
 ### Added
 
+- Retained Document A/B slots with reader-menu and shortcut switching, saving each reader's position before opening the other document.
+- Offline Recently Opened, Recently Added, and Recently Finished library views; scans show up to 18 books within two folder levels and order added books by available file dates.
+- Document and folder pins for Quick Actions, plus shortcuts to the recent library views.
 - Recycle Bin / Trash: document deletion now safely moves items to `/trash` on SD storage by default with collision suffixing, allowing safe restoration to original locations or permanent deletion and Empty Trash.
 - Recycle Bin toggle in Settings under Files & Storage to switch between recoverable trash and immediate permanent deletion.
 - Streamlined `x4-pro` and `x4-pro-simulator` build targets with local PlatformIO configuration and native macOS simulator support.
+
+### Fixed
+
+- Reader short-press power shortcuts now execute their configured action instead of the long-press action.
 
 ### Changed
 

@@ -11,6 +11,9 @@ namespace BookActions {
 
 std::vector<FileBrowserActionActivity::MenuItem> buildBookActionItems(const std::string& fullPath,
                                                                       bool includeRemoveFromRecents);
+// Returns true for library actions, with success or failure text in feedback.
+// Saves assignments and pins before reporting success; does not render.
+bool handleLibraryAction(FileBrowserAction action, const std::string& fullPath, StrId& feedback);
 bool hasClearableBookCache(const std::string& path);
 bool canSendNearby(const std::string& path);
 void clearFileMetadata(const std::string& fullPath);

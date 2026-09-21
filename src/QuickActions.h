@@ -57,7 +57,7 @@ inline constexpr std::array<StrId, CrossPointSettings::QUICK_ACTION_SLOT_ACTION_
 
 // Shared display order for shortcut pickers. The values remain the persisted
 // SHORT_PWRBTN IDs; only their presentation order is centralized here.
-inline constexpr std::array<CrossPointSettings::SHORT_PWRBTN, 30> shortcutActionOrder = {
+inline constexpr std::array<CrossPointSettings::SHORT_PWRBTN, 36> shortcutActionOrder = {
     CrossPointSettings::IGNORE,
     CrossPointSettings::SLEEP,
     CrossPointSettings::PAGE_TURN,
@@ -81,6 +81,12 @@ inline constexpr std::array<CrossPointSettings::SHORT_PWRBTN, 30> shortcutAction
     CrossPointSettings::TOGGLE_DARK_MODE,
     CrossPointSettings::FOOTNOTES,
     CrossPointSettings::FILE_BROWSER,
+    CrossPointSettings::AB_DOCUMENT_HOP,
+    CrossPointSettings::OPEN_PINNED_DOC,
+    CrossPointSettings::OPEN_PINNED_FOLDER,
+    CrossPointSettings::VIEW_RECENTLY_OPENED,
+    CrossPointSettings::VIEW_RECENTLY_ADDED,
+    CrossPointSettings::VIEW_RECENTLY_FINISHED,
     CrossPointSettings::CREATE_CLIPPING,
     CrossPointSettings::LOOKUP_WORD,
     CrossPointSettings::TOGGLE_HOME_BUTTON_IN_READER,
@@ -93,6 +99,8 @@ inline constexpr std::array<CrossPointSettings::SHORT_PWRBTN, 30> shortcutAction
 inline bool supportsTiltPageTurn() { return halTiltSensor.isAvailable(); }
 
 inline bool isActionAvailable(const uint8_t action) {
+  if (action >= CrossPointSettings::AB_DOCUMENT_HOP && action <= CrossPointSettings::VIEW_RECENTLY_FINISHED)
+    return true;
   if (action == CrossPointSettings::READING_STATS) return false;
   if (action == CrossPointSettings::PREVIOUS_PAGE || action == CrossPointSettings::NEARBY_POSITION_SYNC) return true;
   if (action == CrossPointSettings::QUICK_ACTIONS || action == CrossPointSettings::QUICK_LOCK) return true;
@@ -112,6 +120,12 @@ inline bool isQuickActionSlotActionAvailable(const uint8_t action) {
 }
 
 inline StrId actionLabel(const uint8_t action) {
+  if (action == CrossPointSettings::AB_DOCUMENT_HOP) return StrId::STR_AB_HOP;
+  if (action == CrossPointSettings::OPEN_PINNED_DOC) return StrId::STR_PINNED_DOC;
+  if (action == CrossPointSettings::OPEN_PINNED_FOLDER) return StrId::STR_PINNED_FOLDER;
+  if (action == CrossPointSettings::VIEW_RECENTLY_OPENED) return StrId::STR_RECENTLY_OPENED;
+  if (action == CrossPointSettings::VIEW_RECENTLY_ADDED) return StrId::STR_RECENTLY_ADDED;
+  if (action == CrossPointSettings::VIEW_RECENTLY_FINISHED) return StrId::STR_RECENTLY_FINISHED;
   // Use the directional label for the legacy page-turn action ID.
   if (action == CrossPointSettings::PAGE_TURN) return StrId::STR_NEXT_PAGE;
   if (action < CrossPointSettings::QUICK_ACTION_SLOT_ACTION_COUNT) return actionLabels[action];
@@ -236,6 +250,9 @@ inline void settingChanged(CrossPointSettings& settings, uint8_t CrossPointSetti
 
 using ActionHandler = std::function<void(CrossPointSettings::SHORT_PWRBTN)>;
 using ActionFilter = std::function<bool(CrossPointSettings::SHORT_PWRBTN)>;
+
+// Built only while opening a popup/settings screen, never per reader frame.
+std::string displayLabel(uint8_t action);
 
 void showConfiguredPopup(OptionPopup& popup, const std::function<void()>& requestUpdate,
                          ActionHandler actionHandler = {}, ActionFilter actionFilter = {});

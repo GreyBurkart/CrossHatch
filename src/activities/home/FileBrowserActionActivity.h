@@ -29,6 +29,14 @@ enum class FileBrowserAction : int {
   UnpinBootFavorite = 17,
   Restore = 18,
   EmptyTrash = 19,
+  AssignDocA = 20,
+  AssignDocB = 21,
+  PinDocument = 22,
+  UnpinDocument = 23,
+  PinFolder = 24,
+  UnpinFolder = 25,
+  SwitchDoc = 26,
+  LibraryView = 27,
 };
 
 class FileBrowserActionActivity final : public Activity {

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <mutex>
+#include <string>
 
 #include "ReaderFontSizeStep.h"
 
@@ -258,6 +259,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     // raw values or they can silently change an existing binding's behavior.
     PREVIOUS_PAGE = 31,
     NEARBY_POSITION_SYNC = 32,
+    AB_DOCUMENT_HOP = 33,
+    OPEN_PINNED_DOC = 34,
+    OPEN_PINNED_FOLDER = 35,
+    VIEW_RECENTLY_OPENED = 36,
+    VIEW_RECENTLY_ADDED = 37,
+    VIEW_RECENTLY_FINISHED = 38,
     SHORT_PWRBTN_COUNT
   };
 
@@ -592,6 +599,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // adjacent so old settings files simply retain their default-initialized tail.
   uint8_t quickActionSlots[5] = {IGNORE, IGNORE, IGNORE, IGNORE, IGNORE};
   uint8_t quickActionsTrigger = 0;
+  // Cold-path destinations retain full paths rather than silently truncating
+  // them to a filename-sized buffer. No allocations during reading/rendering.
+  std::string pinnedDocPath;
+  std::string pinnedFolderPath;
   // Tilt-based page turning on devices with a supported IMU (X3 and Sticky).
   uint8_t tiltPageTurn = TILT_OFF;
   uint8_t tiltPageTurnDirection = TILT_LEFT_RIGHT;

@@ -25,6 +25,9 @@ struct portMUX_TYPE {};
 
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
+namespace VirtualViews {
+enum class ViewMode : uint8_t;
+}
 
 enum class RequestUpdateResult { Rendered, Rejected };
 enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU };
@@ -103,6 +106,7 @@ class ActivityManager {
 
   void begin(uint32_t renderTaskStackBytes = 16384);
   void loop();
+  bool prepareForDocumentSwitch();
 
   // Will replace currentActivity and drop all activities on stack
   void replaceActivity(std::unique_ptr<Activity>&& newActivity);
@@ -120,9 +124,10 @@ class ActivityManager {
   void goToSettings(bool dismissOnUpSwipe = false);
   void goToFileBrowser(std::string path = {});
   void goToRecentBooks();
+  void goToRecentBooks(VirtualViews::ViewMode view);
   void goToBrowser();
   bool goToOpdsServer(uint32_t serverIndex, bool networkBootReady = false);
-  void goToReader(std::string path, bool suppressBackRelease = false, bool allowFastInitialRefresh = false,
+  bool goToReader(std::string path, bool suppressBackRelease = false, bool allowFastInitialRefresh = false,
                   bool cleanImageBaseOnEntry = false);
   void goToReaderAndRunMenuAction(std::string path, uint8_t action);
   void goToSleep(bool fromTimeout = false);

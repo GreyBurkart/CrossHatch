@@ -3,6 +3,7 @@
 #include <BoardConfig.h>
 #include <HalDisplay.h>
 #include <HalGPIO.h>
+#include <I18n.h>
 
 #include "CrossPointSettings.h"
 #include "util/QuickLockTrigger.h"
@@ -19,7 +20,24 @@ inline HalDisplay::RefreshMode manualScreenRefreshMode() {
   return HalDisplay::FULL_REFRESH;
 }
 
+// These actions can replace the active reader. Physical Power input is owned
+// by main's latch, which survives reader replacement until the button releases.
+inline bool isLibraryShortcutAction(const CrossPointSettings::SHORT_PWRBTN action) {
+  switch (action) {
+    case CrossPointSettings::SHORT_PWRBTN::AB_DOCUMENT_HOP:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_DOC:
+    case CrossPointSettings::SHORT_PWRBTN::OPEN_PINNED_FOLDER:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_OPENED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_ADDED:
+    case CrossPointSettings::SHORT_PWRBTN::VIEW_RECENTLY_FINISHED:
+      return true;
+    default:
+      return false;
+  }
+}
+
 inline bool isPowerButtonActionAvailableOutsideReader(const CrossPointSettings::SHORT_PWRBTN action) {
+  if (isLibraryShortcutAction(action)) return true;
   switch (action) {
     case CrossPointSettings::SHORT_PWRBTN::SLEEP:
     case CrossPointSettings::SHORT_PWRBTN::QUICK_LOCK:
@@ -60,5 +78,7 @@ void enterDeepSleep(bool fromTimeout = false);
 bool handleGlobalPowerButtonAction(CrossPointSettings::SHORT_PWRBTN action,
                                    QuickLockTrigger quickLockTrigger = QuickLockTrigger::None);
 bool dispatchShortcutAction(CrossPointSettings::SHORT_PWRBTN action);
+bool switchDocumentSlot();
+void showLibraryShortcutMessage(StrId message);
 bool startGlobalSyncProgress(bool networkBootReady = false,
                              uint8_t readerOrientation = CrossPointSettings::ORIENTATION_COUNT);

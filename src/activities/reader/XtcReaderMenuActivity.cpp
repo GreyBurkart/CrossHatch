@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "CrossPointSettings.h"
+#include "CrossPointState.h"
 #include "MappedInputManager.h"
 #include "components/TouchHeaderBackButton.h"
 #include "components/UITheme.h"
@@ -36,7 +37,12 @@ std::vector<XtcReaderMenuActivity::MenuItem> XtcReaderMenuActivity::buildMenuIte
                                                                                    const bool isBookCompleted,
                                                                                    const bool hasTouch) {
   std::vector<MenuItem> menuItems;
-  menuItems.reserve(4 + (hasTouch ? 1u : 0u));
+  menuItems.reserve(7 + (hasTouch ? 1u : 0u));
+  menuItems.push_back({MenuAction::SWITCH_DOCUMENT, APP_STATE.targetDocumentSlot(APP_STATE.openEpubPath) == 0
+                                                        ? StrId::STR_SWITCH_TO_DOC_A
+                                                        : StrId::STR_SWITCH_TO_DOC_B});
+  menuItems.push_back({MenuAction::SET_DOCUMENT_A, StrId::STR_SET_DOC_A});
+  menuItems.push_back({MenuAction::SET_DOCUMENT_B, StrId::STR_SET_DOC_B});
   if (hasChapters) {
     menuItems.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
   }

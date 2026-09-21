@@ -45,6 +45,9 @@ class Activity {
 
   // Let activities that need more than a framebuffer refresh prepare a full redraw.
   virtual bool prepareManualRefresh() { return false; }
+  // Called under RenderLock before a document/library shortcut tears down the
+  // reader. A failed position write keeps the current activity alive for retry.
+  virtual bool prepareForDocumentSwitch() { return true; }
 
   // If immediate is true, the update will be triggered immediately.
   // Otherwise, it will be deferred until the end of the current loop iteration.

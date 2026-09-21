@@ -9,10 +9,14 @@
 #include <vector>
 
 #include "RecentBooksStore.h"
+#include "VirtualViews.h"
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
 class RecentBooksActivity final : public Activity {
+ public:
+  using ViewMode = VirtualViews::ViewMode;
+
  private:
   // FreeInkApp hosts the book list (themed rows, icons, touch routing); the
   // header stays on GUI.drawHeader for the battery indicator.
@@ -30,6 +34,10 @@ class RecentBooksActivity final : public Activity {
 
   // Recent tab state
   std::vector<RecentBook> recentBooks;
+  ViewMode viewMode;
+  VirtualViews::ScanStatus scanStatus;
+  // Fixed list storage is reused across renders; no per-frame vector allocation.
+  std::array<freeink::ui::ListItem, VirtualViews::MAX_BOOKS + 1> listItems{};
 
   freeink::ui::GfxRendererTarget uiTarget;  // must precede `app`: the app holds a reference to it
   UiApp app;
@@ -45,6 +53,8 @@ class RecentBooksActivity final : public Activity {
 
   // Data loading
   void loadRecentBooks();
+  void showViewSelector();
+  const char* viewTitle() const;
   void reloadAfterBookAction();
 
   void promptDeleteBook(const RecentBook& book);
@@ -53,7 +63,8 @@ class RecentBooksActivity final : public Activity {
   void showBookActionMenu(size_t bookIndex, bool ignoreInitialConfirmRelease = false);
 
  public:
-  explicit RecentBooksActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
+  explicit RecentBooksActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                               ViewMode view = ViewMode::RecentlyOpened);
   void onEnter() override;
   void onExit() override;
   void loop() override;

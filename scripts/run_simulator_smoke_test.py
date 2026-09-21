@@ -67,7 +67,7 @@ def run_smoke(args: argparse.Namespace) -> int:
     if args.build:
         build_simulator(args.env)
 
-    program = program_path(args.env)
+    program = Path(args.program).resolve() if args.program else program_path(args.env)
     if not program.exists():
         print(f"Simulator binary not found: {program}", file=sys.stderr)
         print(f"Run: pio run -e {args.env}", file=sys.stderr)
@@ -76,9 +76,20 @@ def run_smoke(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix="crossink-sim-smoke-") as temp_dir_name:
         temp_root = Path(temp_dir_name)
         simulator_book_path = prepare_fs(temp_root, book)
+        if args.library:
+            shutil.copy2(book, temp_root / "fs_" / "books" / "main.epub")
+            (temp_root / "fs_" / "books" / "reference.txt").write_text(
+                "Reference document for A/B position testing.\n\n" * 500, encoding="utf-8"
+            )
 
         env = os.environ.copy()
+        # A caller's SD override must never redirect this test to their books.
+        env["CROSSPOINT_SIM_SD"] = str(temp_root / "fs_")
         env["CROSSINK_SIMULATOR_SMOKE_TEST"] = "1"
+        if args.library:
+            env["CROSSHATCH_PHASE2_SMOKE"] = "1"
+        else:
+            env.pop("CROSSHATCH_PHASE2_SMOKE", None)
         env["CROSSINK_SIMULATOR_SMOKE_BOOK"] = simulator_book_path
         env["CROSSINK_SIMULATOR_SMOKE_PAGE_TURNS"] = str(args.page_turns)
         if args.theme:
@@ -96,6 +107,11 @@ def run_smoke(args: argparse.Namespace) -> int:
             stderr=subprocess.STDOUT,
             timeout=args.timeout,
         )
+        if args.artifacts:
+            destination = Path(args.artifacts).resolve()
+            destination.mkdir(parents=True, exist_ok=True)
+            for screenshot in (temp_root / "fs_").glob("phase2-*.bmp"):
+                shutil.copy2(screenshot, destination / screenshot.name)
 
     print(proc.stdout, end="")
 
@@ -108,7 +124,8 @@ def run_smoke(args: argparse.Namespace) -> int:
             print(f"Simulator smoke test output contained crash pattern: {pattern}", file=sys.stderr)
             return 2
 
-    if "Simulator smoke test passed" not in proc.stdout:
+    marker = "Phase 2 library smoke test passed" if args.library else "Simulator smoke test passed"
+    if marker not in proc.stdout:
         print("Simulator smoke test did not print its success marker", file=sys.stderr)
         return 2
 
@@ -117,6 +134,9 @@ def run_smoke(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--library", action="store_true", help="Test offline A/B switching, pins, and library views")
+    parser.add_argument("--artifacts", help="Copy library test screenshots to this directory")
+    parser.add_argument("--program", help="Use a simulator binary from a separate build directory (with --no-build)")
     parser.add_argument("--book", default=str(DEFAULT_BOOK), help="EPUB fixture to copy into the isolated simulator fs_")
     parser.add_argument("--env", choices=("simulator", "sticky-simulator", "x4-pro-simulator"), default="simulator",
                         help="PlatformIO simulator environment to build and run")

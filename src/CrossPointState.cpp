@@ -53,6 +53,28 @@ void CrossPointState::pushRecentBoot(uint16_t idx) {
   if (recentBootFill < BOOT_RECENT_COUNT) recentBootFill++;
 }
 
+bool CrossPointState::assignCurrentToSlot(const std::string& currentPath, const uint8_t slot) {
+  std::lock_guard<std::mutex> storeLock(storeMutex);
+  std::lock_guard<std::mutex> stateLock(_mutex);
+  // One cold-path copy of two bounded paths (at most 1026 bytes plus string
+  // bookkeeping) keeps failed writes from changing the live assignments.
+  DocumentSlots next = static_cast<const DocumentSlots&>(*this);
+  if (!next.assignDocumentSlot(currentPath, slot)) {
+    LOG_ERR("CPS", "Invalid document slot assignment: slot=%u", slot);
+    return false;
+  }
+  next.noteOpenedDocument(openEpubPath);
+  JsonDocument doc;
+  toJson(doc);
+  next.documentSlotsToJson(doc);
+  if (!PersistableStoreBase::writeDocToFile(STATE_FILE_JSON, doc)) {
+    LOG_ERR("CPS", "Failed to persist document slot assignment");
+    return false;
+  }
+  DocumentSlots::operator=(std::move(next));
+  return true;
+}
+
 bool CrossPointState::saveToFile() const {
   std::lock_guard<std::mutex> storeLock(storeMutex);
   std::lock_guard<std::mutex> stateLock(_mutex);
@@ -90,6 +112,7 @@ bool CrossPointState::loadFromFile() {
 }
 
 void CrossPointState::toJson(JsonDocument& doc) const {
+  documentSlotsToJson(doc);
   doc["openEpubPath"] = openEpubPath;
   doc["favoriteSleepImagePath"] = favoriteSleepImagePath;
   doc["preferredSleepFolderPath"] = preferredSleepFolderPath;
@@ -125,6 +148,7 @@ void CrossPointState::toJson(JsonDocument& doc) const {
 }
 
 bool CrossPointState::fromJson(JsonVariantConst doc) {
+  documentSlotsFromJson(doc);
   openEpubPath = doc["openEpubPath"] | "";
   favoriteSleepImagePath = doc["favoriteSleepImagePath"] | "";
   preferredSleepFolderPath = doc["preferredSleepFolderPath"] | "";

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <I18n.h>
+
 #include <vector>
 
 #include "../Activity.h"
@@ -31,8 +33,9 @@ class RecentBooksGridActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
   bool longPressFired = false;
-  bool pendingCacheDeletedFeedback = false;
-  unsigned long cacheDeletedFeedbackShowTime = 0UL;
+  bool pendingActionFeedback = false;
+  StrId actionFeedback = StrId::STR_BOOK_CACHE_DELETED;
+  unsigned long actionFeedbackShowTime = 0UL;
   std::vector<BookState> recentBooks;
   int loadedPageStart = NO_PAGE_LOADED;
 
@@ -43,5 +46,6 @@ class RecentBooksGridActivity final : public Activity {
   void promptDeleteBook(const RecentBook& book);
   void promptRemoveBook(const std::string& path, const std::string& title);
   void showBookActionMenu(int bookIndex, bool ignoreInitialConfirmRelease = false);
+  void showActionFeedback(StrId message);
   int bookIndexFromPoint(int x, int y);
 };
