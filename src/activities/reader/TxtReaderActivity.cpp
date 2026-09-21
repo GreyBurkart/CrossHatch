@@ -282,10 +282,14 @@ void TxtReaderActivity::loop() {
     return;
   }
 
-  // Short press BACK goes directly to home
+  // Checklist source views return to their browser; ordinary reading returns Home.
   if (!touch.prev && !touch.next && mappedInput.wasReleased(MappedInputManager::Button::Back) &&
       mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
-    onGoHome();
+    if (returnToChecklists) {
+      activityManager.goToChecklists(txt ? txt->getPath() : "");
+    } else {
+      onGoHome();
+    }
     return;
   }
 

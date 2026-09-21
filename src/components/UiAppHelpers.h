@@ -10,6 +10,7 @@
 #include "components/UIScale.h"
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
+#include "components/icons/checklistIcons.h"
 #include "components/icons/listIcons.h"
 
 // Shared glue for activities hosting a FreeInkApp: the font-bound render
@@ -86,6 +87,8 @@ inline void applySharedUiTheme(freeink::ui::FreeInkApp<MaxInteractions, MaxHandl
 inline freeink::ui::BitmapRef listIconFor(const UIIcon icon, const int size = 24) {
   if (size >= 32) {
     switch (icon) {
+      case UIIcon::ChecklistIcon:
+        return freeink::ui::bitmapFromIcon(icon_checklist_checked_32);
       case UIIcon::Folder:
         return freeink::ui::bitmapFromIcon(icon_folder_32);
       case UIIcon::Text:
@@ -107,6 +110,8 @@ inline freeink::ui::BitmapRef listIconFor(const UIIcon icon, const int size = 24
     }
   }
   switch (icon) {
+    case UIIcon::ChecklistIcon:
+      return freeink::ui::bitmapFromIcon(icon_checklist_checked_24);
     case UIIcon::Folder:
       return freeink::ui::bitmapFromIcon(icon_folder_24);
     case UIIcon::Text:

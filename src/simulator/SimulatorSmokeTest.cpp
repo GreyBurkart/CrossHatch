@@ -854,8 +854,9 @@ SimulatorSmokeTest smokeTest;
 }  // namespace
 
 bool runSimulatorLibrarySmokeTestTick();
+bool runSimulatorChecklistSmokeTestTick();
 void runSimulatorSmokeTestTick() {
-  if (!runSimulatorLibrarySmokeTestTick()) smokeTest.tick();
+  if (!runSimulatorChecklistSmokeTestTick() && !runSimulatorLibrarySmokeTestTick()) smokeTest.tick();
 }
 
 #endif

@@ -14,14 +14,14 @@
 #include "Xtc.h"
 #include "XtcReaderActivity.h"
 #include "activities/util/BmpViewerActivity.h"
+#include "activities/util/ChecklistActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
 #include "components/UITheme.h"
 
 bool ReaderActivity::isXtcFile(const std::string& path) { return FsHelpers::hasXtcExtension(path); }
 
 bool ReaderActivity::isTxtFile(const std::string& path) {
-  return FsHelpers::hasTxtExtension(path) ||
-         FsHelpers::hasMarkdownExtension(path);  // Treat .md as txt files (until we have a markdown reader)
+  return FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path);
 }
 
 static bool isImagePreviewFile(const std::string& path) {
@@ -173,7 +173,7 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
   const auto txtPath = txt->getPath();
   currentBookPath = txtPath;
   activityManager.replaceActivity(std::make_unique<TxtReaderActivity>(
-      renderer, mappedInput, std::move(txt), initialRefreshCountdown(), allowFastInitialRefresh));
+      renderer, mappedInput, std::move(txt), initialRefreshCountdown(), allowFastInitialRefresh, returnToChecklists));
 }
 
 void ReaderActivity::onEnter() {
@@ -198,6 +198,28 @@ void ReaderActivity::onEnter() {
   }
 
   currentBookPath = initialBookPath;
+  if (!markdownAsText && FsHelpers::hasMarkdownExtension(initialBookPath)) {
+    // Parse after the previous reader has been destroyed. Plain Markdown
+    // without task items retains its existing text-reader behavior.
+    auto checklist = makeUniqueNoThrow<MarkdownChecklist>(initialBookPath);
+    if (!checklist) {
+      LOG_ERR("READER", "Could not allocate checklist document");
+      onGoBack();
+      return;
+    }
+    const auto status = checklist->load();
+    if (status != MarkdownChecklist::Status::NoTasks) {
+      auto viewer =
+          makeUniqueNoThrow<ChecklistActivity>(renderer, mappedInput, std::move(checklist), status, returnToChecklists);
+      if (!viewer) {
+        LOG_ERR("READER", "Could not allocate checklist activity");
+        onGoBack();
+        return;
+      }
+      activityManager.replaceActivity(std::move(viewer));
+      return;
+    }
+  }
   if (isXtcFile(initialBookPath)) {
     auto xtc = loadXtc(initialBookPath);
     if (!xtc) {

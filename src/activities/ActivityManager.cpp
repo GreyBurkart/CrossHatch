@@ -674,6 +674,16 @@ void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
 }
 
+void ActivityManager::goToChecklists(std::string path) {
+  auto browser = makeUniqueNoThrow<FileBrowserActivity>(renderer, mappedInput, std::move(path),
+                                                        FileBrowserActivity::Mode::Checklists);
+  if (!browser) {
+    LOG_ERR("ACT", "OOM opening checklists");
+    return;
+  }
+  replaceActivity(std::move(browser));
+}
+
 void ActivityManager::goToRecentBooks() {
   if (SETTINGS.recentBooksView == CrossPointSettings::RECENT_BOOKS_GRID) {
     replaceActivity(std::make_unique<RecentBooksGridActivity>(renderer, mappedInput));
@@ -733,11 +743,12 @@ bool ActivityManager::goToOpdsServer(const uint32_t serverIndex, const bool netw
 }
 
 bool ActivityManager::goToReader(std::string path, const bool suppressBackRelease, const bool allowFastInitialRefresh,
-                                 const bool cleanImageBaseOnEntry) {
+                                 const bool cleanImageBaseOnEntry, const bool returnToChecklists) {
   // Allocate only the small dispatch activity now. Its onEnter opens the
   // destination parser after replacement has destroyed the previous reader.
-  auto reader = makeUniqueNoThrow<ReaderActivity>(renderer, mappedInput, std::move(path), suppressBackRelease,
-                                                  allowFastInitialRefresh, cleanImageBaseOnEntry);
+  auto reader =
+      makeUniqueNoThrow<ReaderActivity>(renderer, mappedInput, std::move(path), suppressBackRelease,
+                                        allowFastInitialRefresh, cleanImageBaseOnEntry, false, returnToChecklists);
   if (!reader) {
     LOG_ERR("ACT", "OOM opening reader");
     return false;
@@ -780,6 +791,8 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem, const bool initialFul
     const auto& activityName = currentActivity->name;
     if (activityName == "FileBrowser") {
       initialMenuItem = HomeMenuItem::FILE_BROWSER;
+    } else if (activityName == "Checklists") {
+      initialMenuItem = HomeMenuItem::CHECKLISTS;
     } else if (activityName == "RecentBooks") {
       initialMenuItem = HomeMenuItem::RECENTS;
     } else if (activityName == "OpdsBookBrowser") {

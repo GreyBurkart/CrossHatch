@@ -122,6 +122,10 @@ bool acceptCommon(const char* name, bool isDir) {
   return isDir || isSupportedBrowserFile(name);
 }
 
+bool acceptChecklist(const char* name, bool isDir) {
+  return acceptCommon(name, isDir) && (isDir || FsHelpers::hasMarkdownExtension(name));
+}
+
 bool acceptFirmware(const char* name, bool isDir) {
   if (isMacOSMetadataEntry(name) || isWindowsMetadataEntry(name) || (!SETTINGS.showHiddenFiles && name[0] == '.')) {
     return false;
@@ -191,7 +195,7 @@ std::string getFileExtension(const std::string& filename);
 
 FileBrowserActivity::FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                          std::string initialPath, const Mode mode)
-    : Activity("FileBrowser", renderer, mappedInput),
+    : Activity(mode == Mode::Checklists ? "Checklists" : "FileBrowser", renderer, mappedInput),
       mode(mode),
       basepath(initialPath.empty() ? "/" : std::move(initialPath)),
       uiTarget(makeUiTarget(renderer)),
@@ -217,8 +221,10 @@ bool FileBrowserActivity::loadFilesIntoVector(size_t cap, bool& overflow) {
     return false;
   }
 
-  const auto accept =
-      mode == Mode::PickFirmware ? acceptFirmware : (mode == Mode::PickDirectory ? acceptDirectory : acceptCommon);
+  const auto accept = mode == Mode::PickFirmware
+                          ? acceptFirmware
+                          : (mode == Mode::PickDirectory ? acceptDirectory
+                                                         : (mode == Mode::Checklists ? acceptChecklist : acceptCommon));
 
   files.reserve(std::min<size_t>(cap, INDEX_THRESHOLD));
   for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
@@ -301,7 +307,10 @@ void FileBrowserActivity::loadFilesLocked() {
     GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
 
     const auto accept =
-        mode == Mode::PickFirmware ? acceptFirmware : (mode == Mode::PickDirectory ? acceptDirectory : acceptCommon);
+        mode == Mode::PickFirmware
+            ? acceptFirmware
+            : (mode == Mode::PickDirectory ? acceptDirectory
+                                           : (mode == Mode::Checklists ? acceptChecklist : acceptCommon));
     if (fileIndex->open(basepath.c_str(), accept)) {
       usingIndex = true;
       return;
@@ -1092,7 +1101,11 @@ void FileBrowserActivity::activateSelected() {
     if (crosshatch::trash::isPath(fullPath.c_str())) {
       showFileActionMenu(entry);
     } else {
-      onSelectBook(fullPath);
+      if (mode == Mode::Checklists) {
+        activityManager.goToReader(fullPath, false, false, false, true);
+      } else {
+        onSelectBook(fullPath);
+      }
     }
   }
 }
@@ -1296,6 +1309,8 @@ void FileBrowserActivity::navigateBack() {
       topIndex = followListSelection(static_cast<int>(selectorIndex), 0, visibleRows, static_cast<int>(entryCount()));
     }
     requestUpdate();
+  } else if (mode == Mode::Checklists) {
+    onGoHome(HomeMenuItem::CHECKLISTS);
   } else if (mode != Mode::Books) {
     ActivityResult result;
     result.isCancelled = true;
@@ -1400,7 +1415,9 @@ void FileBrowserActivity::buildListScreen(UiApp::ScreenType& screen) {
         fileListMemoryLimited
             ? tr(STR_MEMORY_ERROR)
             : (fileListReadFailed ? tr(STR_ERROR_GENERAL_FAILURE)
-                                  : (mode == Mode::PickFirmware ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND)));
+                                  : (mode == Mode::PickFirmware ? tr(STR_NO_BIN_FILES)
+                                                                : (mode == Mode::Checklists ? tr(STR_NO_CHECKLIST_FILES)
+                                                                                            : tr(STR_NO_FILES_FOUND))));
     screen.centeredText(emptyMessage, screen.theme().bodyText);
     return;
   }
@@ -1501,6 +1518,7 @@ void FileBrowserActivity::render(RenderLock&&) {
           : (mode == Mode::PickDirectory
                  ? std::string(tr(STR_SELECT_RECEIVE_FOLDER))
                  : ((basepath == "/") ? std::string(tr(STR_SD_CARD)) : basepath.substr(basepath.rfind('/') + 1)));
+  if (mode == Mode::Checklists && basepath == "/") folderName = tr(STR_CHECKLISTS);
   // Header via GUI.drawHeader (already FreeInkUI-themed) for the battery
   // indicator; the rest of the screen renders through the app.
   const Rect header = TouchHeaderBackButton::headerRect(renderer, mappedInput);
@@ -1519,9 +1537,10 @@ void FileBrowserActivity::render(RenderLock&&) {
   uiReady = true;
 
   const size_t visibleEntries = entryCount();
-  const auto backLabel = (basepath == "/") ? (mode == Mode::Books ? mappedInput.withBackArrow(tr(STR_HOME))
-                                                                  : mappedInput.withBackArrow(tr(STR_BACK)))
-                                           : mappedInput.withBackArrow(tr(STR_BACK));
+  const auto backLabel =
+      (basepath == "/") ? ((mode == Mode::Books || mode == Mode::Checklists) ? mappedInput.withBackArrow(tr(STR_HOME))
+                                                                             : mappedInput.withBackArrow(tr(STR_BACK)))
+                        : mappedInput.withBackArrow(tr(STR_BACK));
   // In PickFirmware mode, Confirm on a .bin returns the path to the caller (not "open"); show
   // STR_SELECT instead. Directories in the same picker still descend, so keep STR_OPEN there.
   const bool selectingFirmwareFile =

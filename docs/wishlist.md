@@ -140,12 +140,17 @@ identity, revision handling, and any synchronization behavior remain open.
 A supported source is not permission for unrestricted network access. Feeds
 directly into the unified import pipeline (W7).
 
-### W5. Offline checklist runner
+### W5. Offline Markdown Checklist Viewer
 
-Consider reusable personal checklists for preshow checks, maintenance, equipment
-setup, and development testing. Support clear progress, locally saved completion,
-and deliberate reset/reuse. It should work offline and should not create a new
-showtime online-recordkeeping obligation for crew.
+Use ordinary `.md` files with Markdown task-list items (`- [ ]` unchecked,
+`- [x]` checked), so checklists can be created in a text editor and transferred
+using existing file-transfer paths. Display headings and task text for reusable
+personal checklists covering preshow checks, maintenance, equipment setup, and
+development testing. Support clear progress, checking items, locally saved
+completion, and deliberate reset/reuse. Completion updates the source Markdown
+so checked items remain portable when copied off the device. It should work
+offline and should not create a new showtime online-recordkeeping obligation
+for crew.
 
 ### W6. A/B hopping
 
@@ -180,6 +185,8 @@ after which the item behaves like an ordinary CrossHatch document:
 - Avoid designing separate, isolated document-management systems for each transport.
 
 ### W8. Read-only Booth Status Companion
+
+Deferred; excluded from the current Phase 3 scope.
 
 Consider a small foreground viewer for selected booth status snapshots.
 Start from explicit manual requests, or carefully bounded refresh behavior
@@ -228,7 +235,7 @@ fit, and development ROI.
 | **3** | **W6** | A/B hopping | **3 / 10** | Reader flow; dual-slot position tracker via `APP_STATE` and Quick Actions; no dual-engine overhead. |
 | **4** | **F6** | Recently-* virtual views | **3.5 / 10** | Dynamic view over `RecentBooksStore` and SD file timestamps; no file reorganizing. Prior art in CrumBLE. |
 | **5** | **W2** | Configurable Quick Action pins | **4 / 10** | Extending settings persistence for pinned paths/tools and settings picker UI. |
-| **6** | **W5** | Offline checklist runner | **5 / 10** | Standalone foreground Activity, SD file I/O, touch/button list navigation, offline state persistence. |
+| **6** | **W5** | Offline Markdown Checklist Viewer | **5 / 10** | Standalone foreground Activity, Markdown task lists on SD, touch/button list navigation, offline state persistence. |
 | **7** | **W3** | Optional dynamic sleep cards | **5.5 / 10** | Sleep Activity layout addition; local frame caching; server rendering offloaded to Tesserae. Preserves F4. |
 | **8** | **W8** | Booth Status Companion | **6.5 / 10** | Wi-Fi lifecycle, JSON parsing, clear stale/disconnected e-ink state, clean exit task cleanup. |
 | **9** | **W4** | Web transfer & app sources | **7.5 / 10** | Embedded web server endpoints, upload handling, web portal UI, memory discipline on uploads. |
@@ -252,8 +259,9 @@ Validation: native tests plus `python3 scripts/run_simulator_smoke_test.py --env
 
 #### Phase 3: Bounded Foreground Utility Activities (F2 Adherence)
 *Focus: Expand device utility using isolated `Activity` lifecycles that guarantee clean memory teardown.*
-- **W5 — Offline Checklist Runner**: Self-contained checklist tool for prep, preshow checks, and equipment maintenance. Strictly offline SD file I/O with checkable UI and saved completion.
-- **W8 — Read-only Booth Status Companion**: Dedicated foreground viewer for status snapshots with clear stale/disconnected indicators; bounds Wi-Fi and polling strictly to when the activity is active.
+- **W5 — Offline Markdown Checklist Viewer**: Implemented for ordinary `.md` task lists opened from Library, with headings, touch/button checking, completion saved directly into the Markdown file, and confirmed reset. Ordinary Markdown retains its text-reader fallback; the viewer also offers **View Markdown text**. Limits are 64 KiB per file, 128 headings/items, 8 KiB of labels, and 255 bytes per heading/item line. Saves preserve other source bytes and refuse externally changed files; temporary/backup files support recovery. Booth status remains deferred.
+
+Validation: parser/save-failure native tests and `python3 scripts/run_simulator_smoke_test.py --env x4-pro-simulator --checklist` cover Library entry, toggling, reopening, reset cancellation/confirmation, touch, long-list navigation, and plain-Markdown fallback. Repeat with `--env simulator` for button controls. Physical SD errors, power-loss recovery, sleep/wake, and memory stability remain hardware checks; see [Markdown checklists](reader-features.md#markdown-checklists). No cache format change or reset is required.
 
 #### Phase 4: Dynamic Display & Lightweight Frame Ingest (Tesserae Model)
 *Focus: Server-offloaded rendering that protects e-ink performance and power.*
@@ -268,6 +276,7 @@ Validation: native tests plus `python3 scripts/run_simulator_smoke_test.py --env
   - Offline-friendly BLE file transfer protocol for environments where Wi-Fi is undesirable.
 
 #### Deferred / Low Priority
+- **W8 — Read-only Booth Status Companion**: Deferred for now; data sources, connection/security design, and refresh cadence remain open.
 - **W9 — General Smart Folders / Collections**: User-defined tag/collection subsystem (complex metadata tracking; deferred behind automatic F6 views).
 - **Highlights & Clippings**: Deferred baseline features; preserved (F3) but not actively driven.
 

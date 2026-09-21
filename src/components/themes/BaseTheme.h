@@ -137,6 +137,7 @@ enum UIIcon {
   Image,
   Book,
   BookmarkIcon,
+  ChecklistIcon,
   File,
   Recent,
   Settings,

@@ -50,7 +50,7 @@ namespace {
 constexpr uint32_t CAROUSEL_CACHE_MAGIC = 0x43434152;  // "CCAR"
 // Cached frames include all Home visuals, including the menu icons. Bump this
 // whenever their rendering changes so stale snapshots are rebuilt after OTA.
-constexpr uint16_t CAROUSEL_CACHE_VERSION = 5;
+constexpr uint16_t CAROUSEL_CACHE_VERSION = 6;
 constexpr char CAROUSEL_CACHE_PATH[] = "/.crosspoint/home_carousel_cache.bin";
 constexpr char CAROUSEL_CACHE_TMP_PATH[] = "/.crosspoint/home_carousel_cache.tmp";
 constexpr uint32_t CAROUSEL_FRAME_MIN_FREE_AFTER_ALLOC = 64U * 1024U;
@@ -60,6 +60,7 @@ constexpr int HOME_BOOK_SWAP_RECENT_COUNT = 2;
 
 enum class HomeMenuAction {
   BrowseFiles,
+  Checklists,
   ContinueReading,
   RecentBooks,
   OpdsBrowser,
@@ -76,7 +77,7 @@ struct HomeMenuEntry {
 };
 
 struct HomeMenuEntries {
-  static constexpr int kCapacity = 8;
+  static constexpr int kCapacity = 9;
   std::array<HomeMenuEntry, kCapacity> entries{};
   int count = 0;
 
@@ -299,6 +300,7 @@ const char* savedItemsLabel(bool hasBookmarks, bool hasClippings) {
 void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks,
                          bool hasClippings) {
   items.push({tr(STR_BROWSE_FILES), Folder, HomeMenuAction::BrowseFiles});
+  items.push({tr(STR_CHECKLISTS), ChecklistIcon, HomeMenuAction::Checklists});
   items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
 
   if (hasOpdsServers) {
@@ -323,6 +325,7 @@ HomeMenuEntries buildHomeMenuItems(bool hasOpdsServers, bool hasReadingStats, bo
 
 HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks, bool hasClippings) {
   HomeMenuEntries items;
+  items.push({tr(STR_CHECKLISTS), ChecklistIcon, HomeMenuAction::Checklists});
   items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
 
   if (hasOpdsServers) {
@@ -353,6 +356,8 @@ HomeMenuAction homeActionForInitialMenuItem(HomeMenuItem item) {
   switch (item) {
     case HomeMenuItem::FILE_BROWSER:
       return HomeMenuAction::BrowseFiles;
+    case HomeMenuItem::CHECKLISTS:
+      return HomeMenuAction::Checklists;
     case HomeMenuItem::RECENTS:
       return HomeMenuAction::RecentBooks;
     case HomeMenuItem::OPDS_BROWSER:
@@ -1597,6 +1602,9 @@ void HomeActivity::loop() {
           case HomeMenuAction::BrowseFiles:
             onFileBrowserOpen();
             break;
+          case HomeMenuAction::Checklists:
+            activityManager.goToChecklists();
+            break;
           case HomeMenuAction::RecentBooks:
             onRecentsOpen();
             break;
@@ -1841,6 +1849,9 @@ void HomeActivity::loop() {
         break;
       case HomeMenuAction::ContinueReading:
         onContinueReading();
+        break;
+      case HomeMenuAction::Checklists:
+        activityManager.goToChecklists();
         break;
       case HomeMenuAction::RecentBooks:
         onRecentsOpen();

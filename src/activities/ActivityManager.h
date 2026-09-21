@@ -30,7 +30,7 @@ enum class ViewMode : uint8_t;
 }
 
 enum class RequestUpdateResult { Rendered, Rejected };
-enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU };
+enum class HomeMenuItem { NONE, FILE_BROWSER, CHECKLISTS, RECENTS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU };
 
 /**
  * ActivityManager
@@ -123,12 +123,13 @@ class ActivityManager {
   void goToNearbyBookReceive();
   void goToSettings(bool dismissOnUpSwipe = false);
   void goToFileBrowser(std::string path = {});
+  void goToChecklists(std::string path = {});
   void goToRecentBooks();
   void goToRecentBooks(VirtualViews::ViewMode view);
   void goToBrowser();
   bool goToOpdsServer(uint32_t serverIndex, bool networkBootReady = false);
   bool goToReader(std::string path, bool suppressBackRelease = false, bool allowFastInitialRefresh = false,
-                  bool cleanImageBaseOnEntry = false);
+                  bool cleanImageBaseOnEntry = false, bool returnToChecklists = false);
   void goToReaderAndRunMenuAction(std::string path, uint8_t action);
   void goToSleep(bool fromTimeout = false);
   void goToBoot();

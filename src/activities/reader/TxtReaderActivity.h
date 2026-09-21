@@ -27,6 +27,7 @@ class TxtReaderActivity final : public Activity {
   bool longPressBackHandled = false;
   bool longPressMenuHandled = false;
   bool skipRecentBookUpdateOnEntry = false;
+  bool returnToChecklists = false;
   ReaderProgressSaveDebouncer progressSaveDebouncer;
 #if CROSSINK_APP_CAP_TOUCH
   ReaderPinchGesture pinchFontGesture;
@@ -80,11 +81,13 @@ class TxtReaderActivity final : public Activity {
 
  public:
   explicit TxtReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Txt> txt,
-                             int initialRefreshCountdown, bool skipRecentBookUpdateOnEntry = false)
+                             int initialRefreshCountdown, bool skipRecentBookUpdateOnEntry = false,
+                             bool returnToChecklists = false)
       : Activity("TxtReader", renderer, mappedInput),
         txt(std::move(txt)),
         pagesUntilFullRefresh(initialRefreshCountdown),
-        skipRecentBookUpdateOnEntry(skipRecentBookUpdateOnEntry) {}
+        skipRecentBookUpdateOnEntry(skipRecentBookUpdateOnEntry),
+        returnToChecklists(returnToChecklists) {}
   void onEnter() override;
   void onExit() override;
   bool prepareForDocumentSwitch() override;

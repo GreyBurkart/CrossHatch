@@ -19,7 +19,7 @@
 class FileBrowserActivity final : public Activity {
  public:
   // Picker modes return their selected path via ActivityResult.
-  enum class Mode { Books, PickFirmware, PickDirectory };
+  enum class Mode { Books, PickFirmware, PickDirectory, Checklists };
 
  private:
   // FreeInkApp hosts the file list (themed rows, icons, touch routing); the

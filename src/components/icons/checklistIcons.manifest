@@ -1,0 +1,3 @@
+# Regenerate: python3 scripts/generate_icons.py --library lucide --manifest src/components/icons/checklistIcons.manifest --sizes 24,32 --out src/components/icons/checklistIcons.h
+checklist-empty = square
+checklist-checked = square-check

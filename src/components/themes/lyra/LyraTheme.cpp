@@ -59,6 +59,7 @@ int mainMenuIconYOffset(const UIIcon icon) {
 }  // namespace
 
 const freeink::Icon* LyraTheme::iconForName(UIIcon icon, uint32_t size) {
+  if (icon == UIIcon::ChecklistIcon) return size == 24 ? &icon_checklist_checked_24 : &icon_checklist_checked_32;
   if (size == 24) {
     switch (icon) {
       case UIIcon::Folder:

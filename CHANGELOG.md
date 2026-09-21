@@ -2,6 +2,8 @@
 
 ### Added
 
+- Home-level Checklists entry with a Markdown-only folder browser and return navigation from checklists and their text view.
+- Offline Markdown Checklist Viewer: open `.md` task lists from Library with left-side checkboxes, check items with touch or buttons, save completion into the original file, and confirm before resetting the checklist.
 - Retained Document A/B slots with reader-menu and shortcut switching, saving each reader's position before opening the other document.
 - Offline Recently Opened, Recently Added, and Recently Finished library views; scans show up to 18 books within two folder levels and order added books by available file dates.
 - Document and folder pins for Quick Actions, plus shortcuts to the recent library views.
@@ -15,6 +17,7 @@
 
 ### Changed
 
+- Completed checklist items show a filled checkbox and a Done label for clearer feedback.
 - Updated the default boot and sleep screens with the CrossHatch name and a crosshatched-book ink-drop logo.
 - Suppressed Reading Statistics UI across Home, Carousel, Reader menus, Frontlight Drawer quick actions, and Sleep Screen settings, cleanly focusing on book reading progress while strictly preserving bookmarks, reader settings, and reading progress.
 

@@ -9,6 +9,59 @@ This page covers a subset of CrossInk reader features that go beyond basic page 
 
 The sections here focus on larger CrossInk-specific reader features. Small fixes, implementation details, and features that only arrived from upstream CrossPoint are intentionally left out.
 
+## Markdown checklists
+
+Create a UTF-8 `.md` file in a text editor and copy it to SD using the existing
+web transfer or USB Drive. Open **Checklists** from Home to browse folders and
+`.md` files on SD, or open a checklist from Library. Files stay in their existing
+folders; no dedicated folder or import is required:
+
+```markdown
+# Preshow
+- [ ] Charge radios
+- [x] Check sound
+## Projection
+- [ ] Focus projector
+```
+
+- Tap a left-side checkbox or its item, or select it with Up/Down and press Confirm,
+  to check or uncheck it.
+- Completed items show a filled checkbox with a white tick and a **Done** label.
+- Scroll with swipes or page through with held navigation buttons.
+- Select **Reset checklist** at the end and confirm to uncheck all items.
+- Select **View Markdown text** to read the full source, including notes.
+- Back returns to the containing folder in Checklists or Library, depending on where you opened it. Closing the viewer releases its resources;
+  it uses no network or background worker and does not replace the book's resume path.
+
+Each toggle or reset saves directly into the `.md` file. Other text, indentation,
+UTF-8 bytes, and line endings are preserved. If saving fails, the displayed checks
+stay unchanged. If the file was edited elsewhere, close and reopen it before
+checking more items. A file without tasks opens in the usual text reader.
+
+The viewer recognizes ATX headings (`#` through `######`) and task items with
+`-`, `*`, `+`, or numbered list markers. Both `[x]` and `[X]` mean checked.
+Indented tasks are shown as individual items; checking a parent does not check its
+children. Fenced code blocks, YAML front matter, and HTML comment lines are excluded.
+Other Markdown formatting stays literal in labels; prose and blockquotes are
+available through **View Markdown text**.
+
+Limits: 64 KiB per file, 128 combined headings/items, 8 KiB of label text, and
+255 bytes per heading/item line. Files exceeding a limit show an error and can
+still be opened as text; the viewer never saves a partially loaded checklist.
+
+Saves use temporary and backup files beside the source (`.checklist.tmp` and
+`.checklist.bak` suffixes). Do not use these suffixes for other files. An interrupted
+replacement is recovered on the next open of that path. If power loss leaves only
+the backup visible over USB/web transfer, rename it to the original `.md` filename
+before opening it from Library. Do not remove the backup until the original is restored.
+
+Hardware check: on X4 Pro, open a transferred checklist, tap items, cancel and
+confirm a reset, then close/reopen and sleep/wake. Repeat with buttons on X3/X4,
+including a checklist longer than one screen. Copy the file back to confirm that
+only checkbox markers changed. Test failed saves with a disposable SD fixture;
+the error must remain visible without falsely marking an item saved. No cache reset
+is needed. Power-loss recovery and SD failure behavior require hardware verification.
+
 ## In-book Reader Options
 
 Reader settings are available directly from the in-book menu without leaving the book.

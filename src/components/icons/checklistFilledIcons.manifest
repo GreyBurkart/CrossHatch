@@ -1,0 +1,2 @@
+# Regenerate: python3 scripts/generate_icons.py --library tabler-filled --manifest src/components/icons/checklistFilledIcons.manifest --sizes 24 --out src/components/icons/checklistFilledIcons.h
+checklist-complete = square-check
