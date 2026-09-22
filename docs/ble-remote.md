@@ -91,6 +91,23 @@ session on this hardware already sits at roughly 85–90 KB internal free and
 in what is left at that point, not in the much larger boot-time headroom, so
 the *delta* across init/deinit matters more than the absolute figures.
 
+### Build gate at Stage 0
+
+All five targets built from `feat/ble-remote` at `9f0d4e70`:
+
+| Target | Result | `firmware.bin` |
+| --- | --- | ---: |
+| `pio run -e x4-pro` | SUCCESS | 6,089,008 B |
+| `pio run -e x4-pro-blespike` | SUCCESS | 6,259,152 B |
+| `pio run -e x4-pro-simulator` | SUCCESS | native |
+| `pio run -e default` | SUCCESS | 6,103,072 B |
+| `pio run -e sticky` | SUCCESS | 5,974,368 B |
+| `ctest` native suite | 539/539 passed | — |
+
+`nm` over the `default` and `sticky` ELFs returns zero symbols matching
+`nimble`, `ble_hs_`, `ble_gap_`, or `esp_bt_controller`, so the C3 and Sticky
+images genuinely gain nothing.
+
 ### Known deviations from the spec, to settle at Stage 6
 
 - **Bond count.** The prebuilt S3 SDK ships `CONFIG_BT_NIMBLE_MAX_BONDS=3`.
