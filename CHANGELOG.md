@@ -2,6 +2,8 @@
 
 ### Added
 
+- Basic Markdown reading with styled headings, emphasis, lists, quotes, code, links, and page layouts that match the sleep overlay. Plain TXT and interactive checklists remain available.
+
 - Home-level Checklists entry with a Markdown-only folder browser and return navigation from checklists and their text view.
 - Offline Markdown Checklist Viewer: open `.md` task lists from Library with left-side checkboxes, check items with touch or buttons, save completion into the original file, and confirm before resetting the checklist.
 - Retained Document A/B slots with reader-menu and shortcut switching, saving each reader's position before opening the other document.

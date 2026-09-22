@@ -9,6 +9,40 @@ This page covers a subset of CrossInk reader features that go beyond basic page 
 
 The sections here focus on larger CrossInk-specific reader features. Small fixes, implementation details, and features that only arrived from upstream CrossPoint are intentionally left out.
 
+## Markdown reading
+
+Open a UTF-8 `.md` file from Library to read formatted text. Headings, paragraphs,
+bullet and numbered lists, bold/italic, blockquotes, inline and fenced code,
+link labels, and horizontal rules are supported. Regular line breaks within a
+paragraph reflow; blank lines separate paragraphs. Two trailing spaces or a
+backslash make an explicit line break. Code preserves spaces and line breaks,
+with long lines wrapping to the screen. Links display their labels without navigation.
+
+The reader uses the selected reading font, size, margins, orientation, and page
+controls. H1/H2 use the next available built-in size; SD-font headings retain
+that font's loaded size and use bold/spacing. Code is underlined to distinguish
+it using the installed reading font. Plain `.txt` files retain literal text.
+
+This is a small Markdown subset, not full CommonMark or Obsidian rendering.
+Tables, images, HTML, front matter, embeds, and advanced nesting are not rendered
+as rich content. Unrecognized syntax stays as text. Inline parsing is bounded
+to 2 KiB source chunks; formatting that crosses that boundary may stay literal.
+Document text is never rewritten by the reader.
+
+Files recognized as checklists still open in the checklist viewer. Choose
+**View Markdown text** there to read the full document with formatting. A file
+that exceeds the checklist limits may first show that viewer's limit message;
+the same text-view action opens it for reading.
+
+Markdown page layouts are rebuilt on entry and font/orientation changes, using
+one page in RAM and disposable SD files. No manual cache reset is required.
+Simulator check: `python3 scripts/run_simulator_smoke_test.py --env x4-pro-simulator --markdown`.
+
+Hardware check: open a multi-page note on X4 Pro and X3/X4, change font/size,
+page through lists and fenced code, close/reopen, and sleep/wake. Verify the
+sleep page matches reading and repeated use leaves stable free heap/largest
+allocation. An SD write/read failure must show a page error, not a partial page.
+
 ## Markdown checklists
 
 Create a UTF-8 `.md` file in a text editor and copy it to SD using the existing
@@ -29,14 +63,14 @@ folders; no dedicated folder or import is required:
 - Completed items show a filled checkbox with a white tick and a **Done** label.
 - Scroll with swipes or page through with held navigation buttons.
 - Select **Reset checklist** at the end and confirm to uncheck all items.
-- Select **View Markdown text** to read the full source, including notes.
+- Select **View Markdown text** to read the full document with Markdown formatting, including notes.
 - Back returns to the containing folder in Checklists or Library, depending on where you opened it. Closing the viewer releases its resources;
   it uses no network or background worker and does not replace the book's resume path.
 
 Each toggle or reset saves directly into the `.md` file. Other text, indentation,
 UTF-8 bytes, and line endings are preserved. If saving fails, the displayed checks
 stay unchanged. If the file was edited elsewhere, close and reopen it before
-checking more items. A file without tasks opens in the usual text reader.
+checking more items. A file without tasks opens in the Markdown reader.
 
 The viewer recognizes ATX headings (`#` through `######`) and task items with
 `-`, `*`, `+`, or numbered list markers. Both `[x]` and `[X]` mean checked.

@@ -58,6 +58,39 @@ def prepare_fs(temp_root: Path, book: Path) -> str:
     return f"/books/{book.name}"
 
 
+def prepare_markdown_fixtures(temp_root: Path) -> None:
+    books = temp_root / "fs_" / "books"
+    markdown = (
+        "# Reading your own notes\n\n"
+        "A lightweight **Markdown reader** should make *ordinary text* comfortable.\n"
+        "This soft line break continues the same paragraph, including a [readable link](https://example.com).\n\n"
+        "## A small practical list\n\n"
+        "- Pack the notebook and the cable.\n"
+        "- A longer item wraps underneath its own text, keeping the bullet separate from the continuation.\n"
+        "1. Open a document.\n2. Read at your preferred font size.\n\n"
+        "> A quote is an aside, with enough space and a clear edge to distinguish it from the main text.\n\n"
+        "Use `inline_code()` when a detail needs its own treatment.\n\n---\n\n"
+        "### Keep reading\n\n"
+    ) + "".join(
+        f"Paragraph {i + 1}. Comfortable reading preserves the **important words**, *quiet emphasis*, "
+        "and a natural reading rhythm when a paragraph continues onto another page. "
+        "The next sentence gives us enough text to check wrapping without relying on a fixed display size.\n\n"
+        for i in range(24)
+    )
+    for name in ("markdown.md", "markdown.txt", "uppercase.MD"):
+        (books / name).write_text(markdown, encoding="utf-8")
+    (books / "tasks.md").write_text(
+        "# Preshow notes\n\nRead the **notes** and use the checklist when needed.\n\n"
+        "- [ ] Charge radios\n- [x] Sound checked\n", encoding="utf-8",
+    )
+    (books / "code.md").write_text(
+        "# Code across page boundaries\n\n```text\n" + "".join(
+            f"    line {i + 1:03}: **literal** [brackets]  keep spaces\n" for i in range(150)
+        ) + "```\n\n## Back to prose\n\nThis is **formatted** again after the fence.\n",
+        encoding="utf-8",
+    )
+
+
 def run_smoke(args: argparse.Namespace) -> int:
     book = Path(args.book).resolve()
     if not book.exists():
@@ -81,6 +114,8 @@ def run_smoke(args: argparse.Namespace) -> int:
             (temp_root / "fs_" / "books" / "reference.txt").write_text(
                 "Reference document for A/B position testing.\n\n" * 500, encoding="utf-8"
             )
+        if args.markdown:
+            prepare_markdown_fixtures(temp_root)
         if args.checklist:
             checklists = temp_root / "fs_" / "checklists"
             checklists.mkdir()
@@ -110,6 +145,10 @@ def run_smoke(args: argparse.Namespace) -> int:
         # A caller's SD override must never redirect this test to their books.
         env["CROSSPOINT_SIM_SD"] = str(temp_root / "fs_")
         env["CROSSINK_SIMULATOR_SMOKE_TEST"] = "1"
+        if args.markdown:
+            env["CROSSHATCH_MARKDOWN_SMOKE"] = "1"
+        else:
+            env.pop("CROSSHATCH_MARKDOWN_SMOKE", None)
         if args.checklist:
             env["CROSSHATCH_CHECKLIST_SMOKE"] = "1"
         else:
@@ -138,8 +177,9 @@ def run_smoke(args: argparse.Namespace) -> int:
         if args.artifacts:
             destination = Path(args.artifacts).resolve()
             destination.mkdir(parents=True, exist_ok=True)
-            for screenshot in (temp_root / "fs_").glob("phase[23]-*.bmp"):
-                shutil.copy2(screenshot, destination / screenshot.name)
+            for pattern in ("phase[23]-*.bmp", "markdown-*.bmp"):
+                for screenshot in (temp_root / "fs_").glob(pattern):
+                    shutil.copy2(screenshot, destination / screenshot.name)
 
     print(proc.stdout, end="")
 
@@ -152,7 +192,8 @@ def run_smoke(args: argparse.Namespace) -> int:
             print(f"Simulator smoke test output contained crash pattern: {pattern}", file=sys.stderr)
             return 2
 
-    marker = ("Phase 3 checklist smoke test passed" if args.checklist else
+    marker = ("Markdown reader smoke test passed" if args.markdown else
+              "Phase 3 checklist smoke test passed" if args.checklist else
               "Phase 2 library smoke test passed" if args.library else "Simulator smoke test passed")
     if marker not in proc.stdout:
         print("Simulator smoke test did not print its success marker", file=sys.stderr)
@@ -166,6 +207,7 @@ def parse_args() -> argparse.Namespace:
     suite = parser.add_mutually_exclusive_group()
     suite.add_argument("--library", action="store_true", help="Test offline A/B switching, pins, and library views")
     suite.add_argument("--checklist", action="store_true", help="Test Markdown checklist controls and persistence")
+    suite.add_argument("--markdown", action="store_true", help="Test Markdown pages, fonts, resume, and sleep rendering")
     parser.add_argument("--artifacts", help="Copy test screenshots to this directory")
     parser.add_argument("--program", help="Use a simulator binary from a separate build directory (with --no-build)")
     parser.add_argument("--book", default=str(DEFAULT_BOOK), help="EPUB fixture to copy into the isolated simulator fs_")

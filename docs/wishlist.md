@@ -108,8 +108,8 @@ reuse the existing action system where practical.
 
 ### W3. Optional dynamic sleep cards (Tesserae-style)
 
-Expand the dynamic sleep-card concept with Tesserae as a concrete proven
-implementation reference:
+Deferred. The following concept is retained for future reconsideration, not
+active implementation scope:
 - Retain CrossInk/CrossHatch's current local custom sleep-image feature unchanged (F4);
   dynamic cards remain optional.
 - Allow a configured local or self-hosted server (Mac, Linux machine, Raspberry Pi,
@@ -129,6 +129,9 @@ implementation reference:
 
 ### W4. Better web transfer and selected-source integrations
 
+Scope pending reconsideration. Start from a concrete transfer workflow before
+selecting integrations or protocols. Earlier ideas below are candidates only.
+
 Make loading material onto CrossHatch simpler and more reliable, including
 clear destination selection and transfer results. Prioritize a supported path
 from Drafts. Consider Obsidian integration through a plugin or contributor-
@@ -137,8 +140,8 @@ supplied adapter, without making Obsidian a required dependency.
 Prefer a small set of documented, supported sources over a general integration
 framework. Keep generic file transfer available. Transfer protocols, document
 identity, revision handling, and any synchronization behavior remain open.
-A supported source is not permission for unrestricted network access. Feeds
-directly into the unified import pipeline (W7).
+A supported source is not permission for unrestricted network access. A unified
+import pipeline (W7) is not a prerequisite or current commitment.
 
 ### W5. Offline Markdown Checklist Viewer
 
@@ -159,6 +162,9 @@ between primary reading and a reference. Preserve each position and make the
 active slot clear. This does not require keeping two reader engines resident.
 
 ### W7. Print to CrossHatch / unified import pipeline (including AirPrint & Bluetooth)
+
+Deferred while transfer needs are reconsidered. The earlier proposal below is
+background only; it does not define the next implementation scope.
 
 Treat "Print to CrossHatch" conceptually as a **unified document import pipeline**,
 not as a single transport. Multiple transports should eventually feed the same
@@ -236,11 +242,14 @@ fit, and development ROI.
 | **4** | **F6** | Recently-* virtual views | **3.5 / 10** | Dynamic view over `RecentBooksStore` and SD file timestamps; no file reorganizing. Prior art in CrumBLE. |
 | **5** | **W2** | Configurable Quick Action pins | **4 / 10** | Extending settings persistence for pinned paths/tools and settings picker UI. |
 | **6** | **W5** | Offline Markdown Checklist Viewer | **5 / 10** | Standalone foreground Activity, Markdown task lists on SD, touch/button list navigation, offline state persistence. |
-| **7** | **W3** | Optional dynamic sleep cards | **5.5 / 10** | Sleep Activity layout addition; local frame caching; server rendering offloaded to Tesserae. Preserves F4. |
+| **7** | **W3** | Optional dynamic sleep cards (deferred) | **5.5 / 10** | Sleep Activity layout addition; local frame caching; server rendering offloaded to Tesserae. Preserves F4. |
 | **8** | **W8** | Booth Status Companion | **6.5 / 10** | Wi-Fi lifecycle, JSON parsing, clear stale/disconnected e-ink state, clean exit task cleanup. |
-| **9** | **W4** | Web transfer & app sources | **7.5 / 10** | Embedded web server endpoints, upload handling, web portal UI, memory discipline on uploads. |
-| **10**| **W7** | Print to CrossHatch & unified import | **8 / 10** | Unified Inbox pipeline across Mac PDF tooling, AirPrint/IPP (Papyrix), and BLE receive transport. |
+| **9** | **W4** | Web transfer & app sources (scope pending) | **7.5 / 10** | Embedded web server endpoints, upload handling, web portal UI, memory discipline on uploads. |
+| **10**| **W7** | Print to CrossHatch & unified import (deferred) | **8 / 10** | Unified Inbox pipeline across Mac PDF tooling, AirPrint/IPP (Papyrix), and BLE receive transport. |
 | **11**| **W9** | General smart folders / collections | **8.5 / 10**| Low-priority complex metadata collection system (CrumBLE reference). |
+
+Difficulty estimates above describe the earlier concepts; they do not set priority
+or estimate the smaller transfer scope still to be defined.
 
 ### Phased Roadmap
 
@@ -263,17 +272,13 @@ Validation: native tests plus `python3 scripts/run_simulator_smoke_test.py --env
 
 Validation: parser/save-failure native tests and `python3 scripts/run_simulator_smoke_test.py --env x4-pro-simulator --checklist` cover Library entry, toggling, reopening, reset cancellation/confirmation, touch, long-list navigation, and plain-Markdown fallback. Repeat with `--env simulator` for button controls. Physical SD errors, power-loss recovery, sleep/wake, and memory stability remain hardware checks; see [Markdown checklists](reader-features.md#markdown-checklists). No cache format change or reset is required.
 
-#### Phase 4: Dynamic Display & Lightweight Frame Ingest (Tesserae Model)
-*Focus: Server-offloaded rendering that protects e-ink performance and power.*
-- **W3 — Optional Dynamic Sleep Cards**: Integrate Tesserae-compatible display-frame reception and local caching for dashboards, reminders, or booth summaries. Server handles heavy HTML/rendering; network failure falls back cleanly to F4 custom sleep image.
+#### Phase 4: Dynamic Sleep Cards — Deferred
+- **W3 — Optional Dynamic Sleep Cards**: Deferred for future reconsideration.
 
-#### Phase 5: Unified Document Ingest Pipeline (Mac & Mobile Integration)
-*Focus: Cohesive receiving pipeline where multiple transports feed a standard `/Inbox`.*
-- **W4 — Better Web Transfer & Direct App Endpoints**: Tailored HTTP POST endpoints on `CrossPointWebServer` for single-tap drops from Drafts and Obsidian.
-- **W7 — Print to CrossHatch & Multi-Transport Ingest**:
-  - Mac-side print/PDF formatting pipeline (split/crop/dither to 1-bit CBZ/EPUB/XTC).
-  - AirPrint/IPP network printer target mode (adapting Papyrix) during explicit receive sessions.
-  - Offline-friendly BLE file transfer protocol for environments where Wi-Fi is undesirable.
+#### Phase 5: Transfers — Scope to Be Rethought
+- **W4 — Transfer workflow**: Revisit the actual source, destination, and manual steps that need improvement before choosing a small implementation scope.
+- **W7 — Expanded import pipeline**: Deferred. Unified Inbox architecture, Mac PDF tooling, AirPrint/IPP, BLE, and dedicated app integrations are not committed deliverables.
+- No replacement transfer design or implementation is selected yet.
 
 #### Deferred / Low Priority
 - **W8 — Read-only Booth Status Companion**: Deferred for now; data sources, connection/security design, and refresh cadence remain open.

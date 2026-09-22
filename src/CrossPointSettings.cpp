@@ -1165,12 +1165,14 @@ int CrossPointSettings::getReaderFontId() const {
 }
 
 int CrossPointSettings::getBuiltInReaderFontId() const {
-  const FONT_SIZE effectiveSize = getEffectiveReaderFontSize();
+  return getBuiltInReaderFontId(getEffectiveReaderFontSize());
+}
 
+int CrossPointSettings::getBuiltInReaderFontId(const FONT_SIZE size) const {
   switch (fontFamily) {
     case LEXENDDECA:
     default:
-      switch (effectiveSize) {
+      switch (size) {
         case TINY:
           return LEXENDDECA_10_FONT_ID;
         case SMALL:
@@ -1183,7 +1185,7 @@ int CrossPointSettings::getBuiltInReaderFontId() const {
       }
       return getFallbackReaderFontIdForFamily(LEXENDDECA);
     case BITTER:
-      switch (effectiveSize) {
+      switch (size) {
         case TINY:
           return BITTER_10_FONT_ID;
         case SMALL:

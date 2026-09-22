@@ -1,9 +1,32 @@
 # File Formats
 
-These formats describe the SD-card cache files under `/.crosspoint/epub_<hash>/`.
+These formats describe the SD-card cache files under `/.crosspoint/`.
 All POD fields are written in the ESP32 little-endian representation used by
 `Serialization.h`; strings are length-prefixed UTF-8 unless a format notes a
 fixed-size char buffer.
+
+## `/.crosspoint/txt_<path-hash>/markdown.{pages,index}`
+
+### Version 1
+
+`MarkdownReaderLayout` writes a disposable formatted-page spool. Both files
+start with little-endian `u32` magic `0x31444d43` (`CMD1`). They are rebuilt on
+every Markdown reader initialization/reflow and sleep-page reconstruction;
+no previous layout is trusted after a source or setting change. Failed builds
+remove both files. Existing TXT `index.bin` and six-byte `progress.bin`
+(page `u16`, source offset `u32`) formats are unchanged.
+
+`markdown.index` then contains one pair of `u32` values per page: its byte offset
+in `markdown.pages` and an approximate source byte position. `markdown.pages`
+stores each page as run count `u16`, text byte count `u16`, the runs, then text.
+The limits are 192 runs, 4096 text bytes per page, and 65535 pages per document.
+No whole-document index is retained in RAM.
+
+Each 16-byte run contains: font ID `i32`, text offset `u16`, text length `u16`,
+x/y/advance width `i16` each, style flags `u8`, and reserved zero `u8`.
+Text offsets address NUL-terminated strings within that page's text pool.
+Flags: bold=1, italic=2, code=4, quote=8, horizontal rule=16. Rule runs have no
+text. Coordinates are relative to the reader's usable content area.
 
 ## `/.crosspoint/sleep-image-index/<directory-hash>-{bmp,all}.idx`
 

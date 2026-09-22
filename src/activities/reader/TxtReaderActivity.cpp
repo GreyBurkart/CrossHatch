@@ -2,6 +2,7 @@
 
 #include <BidiUtils.h>
 #include <FontCacheManager.h>
+#include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -99,6 +100,14 @@ int getReaderLineHeight(const GfxRenderer& renderer, const int fontId) {
   return std::max(1, static_cast<int>(renderer.getLineHeight(fontId) * SETTINGS.getReaderLineCompression() + 0.5f));
 }
 
+int markdownHeadingFont(const GfxRenderer& renderer, int bodyFont) {
+  if (renderer.isSdCardFont(bodyFont)) return bodyFont;
+  const auto size = static_cast<CrossPointSettings::FONT_SIZE>(std::min(
+      static_cast<int>(CrossPointSettings::LARGE), static_cast<int>(SETTINGS.getEffectiveReaderFontSize()) + 1));
+  const int heading = SETTINGS.getBuiltInReaderFontId(size);
+  return renderer.getFontMap().count(heading) ? heading : bodyFont;
+}
+
 void drawToast(const GfxRenderer& renderer, const char* msg) {
   constexpr int toastPadX = 20;
   constexpr int toastPadY = 12;
@@ -123,6 +132,11 @@ void TxtReaderActivity::onEnter() {
     return;
   }
 
+  markdownMode = FsHelpers::hasMarkdownExtension(txt->getPath());
+  if (markdownMode) {
+    markdownLayout = makeUniqueNoThrow<MarkdownReaderLayout>();
+    if (!markdownLayout) LOG_ERR("MD", "Could not allocate Markdown reader");
+  }
   sdFontSystem.ensureLoaded(renderer);
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
 
@@ -171,6 +185,7 @@ void TxtReaderActivity::onExit() {
   currentPageLines.clear();
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
+  markdownLayout.reset();
   txt.reset();
 }
 
@@ -695,6 +710,21 @@ void TxtReaderActivity::initializeReader() {
   linesPerPage = viewportHeight / lineHeight;
   if (linesPerPage < 1) linesPerPage = 1;
 
+  if (markdownMode) {
+    // The document spool is rebuilt on entry/reflow, including same-size source edits.
+    // Only one page is resident; all storage and parser allocations are fallible.
+    GUI.drawPopup(renderer, tr(STR_INDEXING));
+    markdownFailed =
+        !markdownLayout || !markdownLayout->build(*txt, renderer,
+                                                  {cachedFontId, markdownHeadingFont(renderer, cachedFontId),
+                                                   viewportWidth, viewportHeight, lineHeight});
+    if (markdownFailed) LOG_ERR("MD", "Could not initialize Markdown reader");
+    totalPages = markdownFailed ? 0 : markdownLayout->pageCount();
+    loadProgress();
+    initialized = true;
+    return;
+  }
+
   // Try to load cached page index first
   if (!loadPageIndexCache()) {
     // Cache not found, build page index
@@ -799,10 +829,11 @@ void TxtReaderActivity::render(RenderLock&&) {
     initializeReader();
   }
 
-  if (pageOffsets.empty()) {
+  if (markdownMode ? (markdownFailed || totalPages == 0) : pageOffsets.empty()) {
     renderer.clearScreen(ReaderUtils::readerBackgroundColor());
-    renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_EMPTY_FILE), ReaderUtils::readerForegroundBlack(),
-                              EpdFontFamily::BOLD);
+    renderer.drawCenteredText(UI_12_FONT_ID, renderer.getScreenHeight() / 2,
+                              (markdownFailed ? tr(STR_PAGE_LOAD_ERROR) : tr(STR_EMPTY_FILE)),
+                              ReaderUtils::readerForegroundBlack(), EpdFontFamily::BOLD);
     renderer.displayBuffer();
     return;
   }
@@ -812,10 +843,18 @@ void TxtReaderActivity::render(RenderLock&&) {
   if (currentPage >= totalPages) currentPage = totalPages - 1;
 
   // Load current page content
-  size_t offset = pageOffsets[currentPage];
-  size_t nextOffset;
-  currentPageLines.clear();
-  loadPageAtOffset(offset, currentPageLines, nextOffset);
+  if (markdownMode) {
+    if (!markdownLayout->loadPage(currentPage)) {
+      renderer.clearScreen(ReaderUtils::readerBackgroundColor());
+      GUI.drawPopup(renderer, tr(STR_PAGE_LOAD_ERROR));
+      return;
+    }
+  } else {
+    const size_t offset = pageOffsets[currentPage];
+    size_t nextOffset;
+    currentPageLines.clear();
+    loadPageAtOffset(offset, currentPageLines, nextOffset);
+  }
 
   renderer.clearScreen(ReaderUtils::readerBackgroundColor());
   renderPage();
@@ -831,6 +870,11 @@ void TxtReaderActivity::renderPage() {
 
   // Render text lines with alignment
   auto renderLines = [&]() {
+    if (markdownMode) {
+      markdownLayout->draw(renderer, cachedOrientedMarginLeft, cachedOrientedMarginTop,
+                           ReaderUtils::readerForegroundBlack());
+      return;
+    }
     int y = cachedOrientedMarginTop;
     for (const auto& line : currentPageLines) {
       if (!line.empty()) {
@@ -923,16 +967,20 @@ bool TxtReaderActivity::getFrontlightPanelBookDetails(FrontlightPanelBookDetails
 }
 
 bool TxtReaderActivity::saveProgress(const int page) {
-  if (!txt) {
+  if (!txt || (markdownMode && (markdownFailed || totalPages == 0))) {
     return false;
+  }
+  uint32_t offset = 0;
+  if (markdownMode) {
+    if (!markdownLayout->sourceOffset(page, offset)) return false;
+  } else if (page >= 0 && page < static_cast<int>(pageOffsets.size())) {
+    offset = pageOffsets[page];
   }
   HalFile f;
   if (!Storage.openFileForWrite("TRS", txt->getCachePath() + "/progress.bin", f)) {
     return false;
   }
-  // 6-byte format: page(2 bytes LE) + file offset(4 bytes LE)
-  // The offset lets drawCurrentPageToBuffer render without requiring index.bin.
-  const size_t offset = (page >= 0 && page < static_cast<int>(pageOffsets.size())) ? pageOffsets[page] : 0;
+  // Shared 6-byte format: page(2 bytes LE) + source offset(4 bytes LE).
   uint8_t data[6];
   data[0] = page & 0xFF;
   data[1] = (page >> 8) & 0xFF;
@@ -946,12 +994,14 @@ bool TxtReaderActivity::saveProgress(const int page) {
     LOG_ERR("TRS", "Short write saving reader progress");
     return false;
   }
-  progressSaveDebouncer.markPersisted(static_cast<uint32_t>(page));
+  progressSaveDebouncer.markPersisted(static_cast<uint32_t>(page), markdownMode ? offset : 0);
   return true;
 }
 
 bool TxtReaderActivity::queueProgressSave() {
-  if (!progressSaveDebouncer.observe(static_cast<uint32_t>(currentPage))) {
+  uint32_t sourceOffset = 0;
+  if (markdownMode && !markdownLayout->sourceOffset(currentPage, sourceOffset)) return false;
+  if (!progressSaveDebouncer.observe(static_cast<uint32_t>(currentPage), sourceOffset)) {
     return true;
   }
   return saveProgress(currentPage);
@@ -1180,6 +1230,24 @@ bool TxtReaderActivity::drawCurrentPageToBuffer(const std::string& filePath, Gfx
         }
       }
     }
+  }
+
+  if (FsHelpers::hasMarkdownExtension(filePath)) {
+    // Same layout and draw code as the foreground reader, including code fences.
+    auto markdown = makeUniqueNoThrow<MarkdownReaderLayout>();
+    if (!markdown ||
+        !markdown->build(txt, renderer, {fontId, markdownHeadingFont(renderer, fontId), vw, vh, lineHeight}) ||
+        markdown->pageCount() == 0 || !markdown->loadPage(std::clamp(savedPage, 0, markdown->pageCount() - 1))) {
+      LOG_ERR("SLP", "Could not prepare Markdown sleep page");
+      return false;
+    }
+    renderer.clearScreen(ReaderUtils::readerBackgroundColor());
+    auto draw = [&]() { markdown->draw(renderer, marginLeft, marginTop, ReaderUtils::readerForegroundBlack()); };
+    auto scope = renderer.getFontCacheManager()->createPrewarmScope();
+    draw();
+    scope.endScanAndPrewarm();
+    draw();
+    return true;
   }
 
   // Step 2: If progress.bin didn't provide the offset, fall back to index.bin.
