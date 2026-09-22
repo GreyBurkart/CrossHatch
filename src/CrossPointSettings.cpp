@@ -19,6 +19,9 @@
 #include <string>
 
 #include "I18nKeys.h"
+#if CROSSINK_APP_CAP_BLE_REMOTE
+#include "ble/BleRemoteAction.h"
+#endif
 #include "QuickActions.h"
 #include "SettingsList.h"
 #include "fontIds.h"
@@ -483,6 +486,14 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["tiltPageTurnDirectionSchema"] = TILT_DIRECTION_SCHEMA_CURRENT;
   doc["clockDateHasBeenSynced"] = clockDateHasBeenSynced;
   doc["screenInverted"] = screenInverted;
+#if CROSSINK_APP_CAP_BLE_REMOTE
+  doc["bleRemoteProfile"] = bleRemoteProfile;
+  JsonArray bleRemoteSlotsJson = doc["bleRemoteCustomSlots"].to<JsonArray>();
+  for (const uint8_t action : bleRemoteCustomSlots) {
+    bleRemoteSlotsJson.add(action);
+  }
+  doc["bleRemoteKeepAwake"] = bleRemoteKeepAwake;
+#endif
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -730,6 +741,31 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       }
     }
   }
+#if CROSSINK_APP_CAP_BLE_REMOTE
+  // Reject anything outside the v1 whitelist rather than clamping it, so a
+  // hand-edited or downgraded settings file cannot smuggle an unmapped id into
+  // the HID layer.
+  const uint8_t persistedBleProfile = doc["bleRemoteProfile"] | static_cast<uint8_t>(0);
+  if (persistedBleProfile < ble_remote::PROFILE_COUNT) {
+    bleRemoteProfile = persistedBleProfile;
+  } else {
+    bleRemoteProfile = 0;
+    needsResave = true;
+  }
+  JsonVariantConst bleRemoteSlotsJson = doc["bleRemoteCustomSlots"];
+  if (!bleRemoteSlotsJson.isNull()) {
+    for (size_t i = 0; i < std::size(bleRemoteCustomSlots); ++i) {
+      const uint8_t action = bleRemoteSlotsJson[i] | static_cast<uint8_t>(0);
+      if (ble_remote::isValidAction(action)) {
+        bleRemoteCustomSlots[i] = action;
+      } else {
+        bleRemoteCustomSlots[i] = 0;
+        needsResave = true;
+      }
+    }
+  }
+  bleRemoteKeepAwake = (doc["bleRemoteKeepAwake"] | static_cast<uint8_t>(0)) ? 1 : 0;
+#endif
   const uint8_t persistedQuickActionsTrigger =
       doc["quickActionsTrigger"] | static_cast<uint8_t>(QuickActions::Trigger::None);
   const bool unavailableHomeTrigger =

@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 
+#include "AppCapabilities.h"
 #include "ReaderFontSizeStep.h"
 
 class CrossPointSettings : public PersistableStore<CrossPointSettings> {
@@ -633,6 +634,19 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
   uint8_t trackReadingStats = 0;
   uint8_t recycleBinEnabled = 1;
+#if CROSSINK_APP_CAP_BLE_REMOTE
+  // Bluetooth Remote (X4 Pro only). Profile index follows ble_remote::Profile;
+  // bleRemoteCustomSlots holds one ble_remote::Action id per slot and is only
+  // consulted while the Custom profile is active. Both are validated against
+  // the v1 whitelist on load. Keep these appended so older settings files
+  // simply retain their default-initialized tail.
+  uint8_t bleRemoteProfile = 0;
+  uint8_t bleRemoteCustomSlots[6] = {0, 0, 0, 0, 0, 0};
+  // Suspend the sleep timer only while a host is connected and Remote is in
+  // the foreground. Off by default; entering Remote never changes sleep policy
+  // on its own.
+  uint8_t bleRemoteKeepAwake = 0;
+#endif
 
   ~CrossPointSettings() = default;
 
