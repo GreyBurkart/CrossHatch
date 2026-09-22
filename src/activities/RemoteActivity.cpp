@@ -27,10 +27,13 @@ using ble_remote::Slot;
 namespace {
 
 constexpr char TAG[] = "REMOTE";
-constexpr fui::ActionId ACTION_ROW = 1;
+constexpr fui::ActionId ACTION_TILE = 1;
 
-constexpr Slot SLOT_ORDER[ble_remote::SLOT_COUNT] = {Slot::Next,   Slot::Previous, Slot::Primary,
-                                                     Slot::Escape, Slot::Aux1,     Slot::Aux2};
+// Tile order, three per row. The top row is the core clicker; the bottom row
+// is secondary and is dropped entirely when the profile maps none of it.
+constexpr Slot TILE_ORDER[ble_remote::SLOT_COUNT] = {Slot::Previous, Slot::Primary, Slot::Next,
+                                                     Slot::Escape,   Slot::Aux1,    Slot::Aux2};
+constexpr uint16_t CORE_TILE_COUNT = 3;
 
 StrId slotLabel(Slot slot) {
   switch (slot) {
@@ -71,9 +74,6 @@ RemoteActivity::RemoteActivity(GfxRenderer& renderer, MappedInputManager& mapped
 
 void RemoteActivity::onEnter() {
   Activity::onEnter();
-  selectedIndex = 0;
-  topIndex = 0;
-  visibleRows = 1;
   uiReady = false;
   startFailed = false;
   authRefused = false;
@@ -91,10 +91,10 @@ void RemoteActivity::onEnter() {
     }
   }
 
-  refreshRows();
+  refreshTiles();
   applySharedUiTheme(app, uiTarget);
-  app.on(ACTION_ROW, &RemoteActivity::onRowEvent, this);
-  app.setScreen(&RemoteActivity::listScreen, this);
+  app.on(ACTION_TILE, &RemoteActivity::onTileEvent, this);
+  app.setScreen(&RemoteActivity::remoteScreen, this);
   requestUpdate();
 }
 
@@ -150,7 +150,7 @@ void RemoteActivity::drainAdapterEvents() {
   }
   if (needsRedraw) {
     // Redraw only on a state change, never per press.
-    refreshRows();
+    refreshTiles();
     requestUpdate();
   }
 }
@@ -188,25 +188,32 @@ const char* RemoteActivity::profileName() const {
   return tr(STR_BLE_REMOTE_PROFILE_PRESENTATION);
 }
 
-void RemoteActivity::refreshRows() {
+void RemoteActivity::refreshTiles() {
   const auto profile = static_cast<ble_remote::Profile>(SETTINGS.bleRemoteProfile);
+  bool secondRowUsed = false;
   for (size_t i = 0; i < ble_remote::SLOT_COUNT; ++i) {
-    const Slot slot = SLOT_ORDER[i];
+    const Slot slot = TILE_ORDER[i];
     const Action action = ble_remote::resolveSlot(profile, slot, SETTINGS.bleRemoteCustomSlots,
                                                   std::size(SETTINGS.bleRemoteCustomSlots));
-    rowItems[i].label = I18N.get(slotLabel(slot));
-    rowItems[i].value = I18N.get(ble_remote::actionLabel(action));
-    rowItems[i].actionValue = static_cast<int16_t>(i);
+    // The action is the label: with a Custom profile a slot name like "Aux 1"
+    // says nothing, while "Volume Up" says exactly what the tile sends.
+    tiles[i].label = I18N.get(ble_remote::actionLabel(action));
+    tiles[i].value = static_cast<int16_t>(i);
+    tiles[i].enabled = action != Action::None;
+    if (i >= CORE_TILE_COUNT && action != Action::None) {
+      secondRowUsed = true;
+    }
   }
+  // 2x3 when the secondary row carries anything, 1x3 when it is all unset.
+  tileCount = secondRowUsed ? static_cast<uint16_t>(ble_remote::SLOT_COUNT) : CORE_TILE_COUNT;
 }
 
-void RemoteActivity::onRowEvent(const fui::ActionEvent& event, void* user) {
+void RemoteActivity::onTileEvent(const fui::ActionEvent& event, void* user) {
   auto* self = static_cast<RemoteActivity*>(user);
   if (event.value < 0 || event.value >= static_cast<int>(ble_remote::SLOT_COUNT)) {
     return;
   }
-  self->selectedIndex = event.value;
-  self->sendSlot(SLOT_ORDER[event.value]);
+  self->sendSlot(TILE_ORDER[event.value]);
   // Deliberately no requestUpdate(): the host reacting is the feedback, and an
   // e-ink redraw per press would be both slow and ugly.
 }
@@ -269,11 +276,11 @@ void RemoteActivity::loop() {
   // Power keeps its normal system behavior and is intentionally not handled.
 }
 
-void RemoteActivity::listScreen(UiApp::ScreenType& screen, void* user) {
-  static_cast<RemoteActivity*>(user)->buildListScreen(screen);
+void RemoteActivity::remoteScreen(UiApp::ScreenType& screen, void* user) {
+  static_cast<RemoteActivity*>(user)->buildRemoteScreen(screen);
 }
 
-void RemoteActivity::buildListScreen(UiApp::ScreenType& screen) {
+void RemoteActivity::buildRemoteScreen(UiApp::ScreenType& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   screen.setContentMargin(
       fui::Insets{static_cast<int16_t>(metrics.topPadding + TouchHeaderBackButton::height(metrics, mappedInput)), 0,
@@ -291,21 +298,24 @@ void RemoteActivity::buildListScreen(UiApp::ScreenType& screen) {
     screen.target().text(screen.takeTop(statusHeight), passkeyText, statusStyle);
   }
   screen.target().text(screen.takeTop(statusHeight, theme.spaceLg), profileName(), theme.smallText);
-  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
-  fui::ListProps props;
-  props.items = rowItems;
-  props.count = static_cast<uint16_t>(ble_remote::SLOT_COUNT);
-  props.selectedIndex = static_cast<int16_t>(selectedIndex);
-  props.action = ACTION_ROW;
+  // Fill the rest of the body with the tiles, so each one is as large a touch
+  // target as the screen allows rather than a fixed small height.
+  const fui::Rect body = screen.body();
+  fui::TileGridProps props;
+  props.items = tiles;
+  props.count = tileCount;
+  props.action = ACTION_TILE;
+  props.columns = TILE_COLUMNS;
   props.inputMask = fui::InputTouch;
-  props.valueInset = 8;
-  props.labelText = screen.theme().bodyText;
-  const auto rows = configureUiList(props, screen.theme(), screen.body());
-  visibleRows = rows > 0 ? rows : 1;
-  topIndex = scrollListBy(topIndex, 0, visibleRows, static_cast<int>(ble_remote::SLOT_COUNT));
-  props.topIndex = static_cast<uint16_t>(topIndex);
-  screen.list(props);
+  props.text = theme.bodyText;
+  const int16_t rows = static_cast<int16_t>((tileCount + TILE_COLUMNS - 1) / TILE_COLUMNS);
+  if (rows > 0 && body.height > 0) {
+    const int16_t available = static_cast<int16_t>(body.height - (rows - 1) * props.gap);
+    const int16_t perRow = static_cast<int16_t>(available / rows);
+    props.tileHeight = perRow > theme.minTouchSize ? perRow : theme.minTouchSize;
+  }
+  screen.tileGrid(props);
 }
 
 void RemoteActivity::render(RenderLock&&) {

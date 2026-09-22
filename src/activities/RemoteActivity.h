@@ -11,7 +11,6 @@
 
 #include "activities/Activity.h"
 #include "ble/BleRemoteAdapter.h"
-#include "util/ButtonNavigator.h"
 
 // Foreground-only BLE HID control surface for the X4 Pro. While it is on top,
 // the physical buttons drive the paired host and never reach the reader; on
@@ -42,13 +41,13 @@ class RemoteActivity final : public Activity {
 
   void sendSlot(ble_remote::Slot slot);
   void drainAdapterEvents();
-  void refreshRows();
+  void refreshTiles();
   const char* statusText() const;
   const char* profileName() const;
 
-  static void listScreen(UiApp::ScreenType& screen, void* user);
-  static void onRowEvent(const freeink::ui::ActionEvent& event, void* user);
-  void buildListScreen(UiApp::ScreenType& screen);
+  static void remoteScreen(UiApp::ScreenType& screen, void* user);
+  static void onTileEvent(const freeink::ui::ActionEvent& event, void* user);
+  void buildRemoteScreen(UiApp::ScreenType& screen);
 
   // Held by value: the adapter object itself is small, and the stack it owns
   // is brought up in onEnter() and released in onExit().
@@ -59,16 +58,16 @@ class RemoteActivity final : public Activity {
   bool wifiBusy = false;
   bool backLongPressFired = false;
 
-  ButtonNavigator buttonNavigator;
-  int selectedIndex = 0;
-
   freeink::ui::GfxRendererTarget uiTarget;
   UiApp app;
   std::atomic<bool> uiReady{false};
-  int visibleRows = 1;
-  int topIndex = 0;
   char passkeyText[16] = {};
-  freeink::ui::ListItem rowItems[ble_remote::SLOT_COUNT]{};
+  // Tiles are laid out three per row: the core clicker row (Previous,
+  // Primary, Next) and, when the profile maps them, a second row of Escape
+  // and the two aux slots. That is the 1x3 to 2x3 the screen shows.
+  static constexpr uint8_t TILE_COLUMNS = 3;
+  freeink::ui::TileGridItem tiles[ble_remote::SLOT_COUNT]{};
+  uint16_t tileCount = 0;
 };
 
 #endif
