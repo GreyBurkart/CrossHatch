@@ -138,6 +138,10 @@ protection was achieved, so the link did **not** fall back to Just Works. The
 pinned DisplayOnly + bonding + MITM + secure-connections configuration works
 on macOS.
 
+Host-side delivery was confirmed visually in session 2: TextEdit's cursor moved
+ten characters right and then three left, exactly one step per `SEND` line, and
+went idle after `releaseAll()`. No repeats, no missed steps, no stuck key.
+
 Session 1's 8,799 ms is operator-paced — it includes finding the device in
 System Settings. **799 ms is the real reconnect figure** the spec asks to be
 recorded. macOS reconnected on its own with no prompt, and the bond survived
@@ -215,6 +219,21 @@ images genuinely gain nothing.
   ESP-IDF derives the Bluetooth address from that base.
 
 ---
+
+### Stage 0 verdict
+
+**Gate passed.** The image fits with 294,448 B to spare, `deinit(true)` returns
+memory and re-init works with no progressive loss, authenticated bonded pairing
+to macOS works, and HID reports reach the host one press per action.
+
+Three findings carry into the later stages:
+
+1. Gate sending on `onAuthenticationComplete`, never on `onConnect`, and do not
+   assume the two callbacks arrive in a fixed order.
+2. `onPassKeyDisplay()` does not fire while `setSecurityPasskey()` is set, so
+   Stage 6 must generate the passkey through the callback to display it.
+3. A live stack needs 66,836 B of internal DRAM and none of PSRAM, so
+   RemoteActivity must not be entered with an EPUB reader still resident.
 
 ## Stage 0 hardware test script
 
