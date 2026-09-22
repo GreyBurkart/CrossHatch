@@ -216,6 +216,33 @@ views (F6).
 - Avoid turning library management into an oversized database subsystem.
 - **Reference**: CrumBLE is the primary reference implementation to inspect.
 
+### W10. Bluetooth Remote (X4 Pro as a BLE HID control surface)
+
+Implemented. In a foreground Remote activity the X4 Pro presents itself to a
+paired Mac, iPad, iPhone, or Windows PC as a BLE HID keyboard and consumer
+control. One physical button press or touch target sends exactly one key or
+media action; leaving the activity ends all Bluetooth behavior. Direction is
+reader-to-host only and no host-side software is required. Primary use is
+advancing slides or cues from the reader while it is already in hand.
+
+- X4 Pro only, gated behind `CROSSINK_APP_CAP_BLE_REMOTE`. The ESP32-C3 and
+  Sticky images contain no Bluetooth code.
+- Pairing is DisplayOnly with bonding, MITM, and secure connections; the reader
+  shows a six-digit passkey and Just Works is refused.
+- Presentation, Media, Navigation, and Custom profiles, with Custom limited to
+  a fixed v1 action whitelist. No macro editor and no text entry.
+- Measurements, the pairing and delivery results from hardware, and the
+  hardware acceptance checklist are in [docs/ble-remote.md](ble-remote.md).
+
+**This is independent of W7 and does not reactivate it.** W10 is an outbound
+HID control surface; it carries no file data, defines no transfer protocol,
+adds no companion GATT service, and feeds no import pipeline. W7's BLE receive
+transport remains deferred and its bond is deliberately not reused here.
+
+Deferred within W10, not planned: mouse or trackpad, text entry, macros, MIDI,
+a background always-on mode, per-app presets, concurrent connections, and any
+host-to-reader feedback.
+
 ## Project Non-Goals & Deferred Items
 
 - **Highlights & Clippings**: Low priority; retained as deferred baseline features,
@@ -247,6 +274,7 @@ fit, and development ROI.
 | **9** | **W4** | Web transfer & app sources (scope pending) | **7.5 / 10** | Embedded web server endpoints, upload handling, web portal UI, memory discipline on uploads. |
 | **10**| **W7** | Print to CrossHatch & unified import (deferred) | **8 / 10** | Unified Inbox pipeline across Mac PDF tooling, AirPrint/IPP (Papyrix), and BLE receive transport. |
 | **11**| **W9** | General smart folders / collections | **8.5 / 10**| Low-priority complex metadata collection system (CrumBLE reference). |
+| **12**| **W10** | Bluetooth Remote (BLE HID control surface) | **6 / 10** | Pinned NimBLE peripheral behind one adapter class, foreground activity, capability-gated to X4 Pro. Cost is internal RAM and flash headroom, not algorithmic difficulty. |
 
 Difficulty estimates above describe the earlier concepts; they do not set priority
 or estimate the smaller transfer scope still to be defined.

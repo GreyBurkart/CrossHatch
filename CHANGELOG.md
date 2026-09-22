@@ -2,6 +2,8 @@
 
 ### Added
 
+- Bluetooth Remote (Xteink X4 Pro only): use the reader as a BLE keyboard and media remote for a Mac, iPad, iPhone, or Windows PC. Physical buttons and six large touch targets send one key or media action each, with Presentation, Media, Navigation, and Custom profiles. Pairing shows a six-digit code on the reader and requires the host to enter it; up to four hosts can stay paired. An optional setting keeps the reader awake while a host is connected. See [docs/ble-remote.md](docs/ble-remote.md).
+
 - Basic Markdown reading with styled headings, emphasis, lists, quotes, code, links, and page layouts that match the sleep overlay. Plain TXT and interactive checklists remain available.
 
 - Home-level Checklists entry with a Markdown-only folder browser and return navigation from checklists and their text view.
