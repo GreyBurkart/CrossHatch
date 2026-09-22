@@ -121,50 +121,63 @@ reproducible rather than a single lucky sample.
 
 ### Pairing and HID delivery — measured on hardware
 
-One bonded session against macOS, peer `60:3e:5f:7d:51:a7`.
+Two sessions against the same Mac, peer `60:3e:5f:7d:51:a7`: a first-ever
+pairing, then a reconnect to the stored bond after a reboot.
 
-| Observation | Value |
-| --- | --- |
-| Connect, from advertising start to `onConnect` | 8,799 ms (includes the operator locating the device in System Settings; **not** a clean reconnect figure) |
-| Security result | `encrypted=1 authenticated=1 bonded=1` |
-| Time from connect to authentication complete | 20,383 ms (operator-paced passkey entry) |
-| Bonds stored afterwards | 1 |
-| Disconnect on teardown | HCI 0x16, Connection Terminated By Local Host |
+| | Session 1, first pairing | Session 2, reconnect |
+| --- | ---: | ---: |
+| Advertising start to `onConnect` | 8,799 ms | **799 ms** |
+| Connect to authentication complete | 20,383 ms | already encrypted on connect |
+| Security result | `encrypted=1 authenticated=1 bonded=1` | `encrypted=1 authenticated=1 bonded=1` |
+| Reports emitted after encryption | 8 of 14 | **14 of 14** |
+| Bonds stored | 1 | 1 |
+| Disconnect on teardown | HCI 0x16, local host | HCI 0x16, local host |
 
-`authenticated=1` is the pass condition that matters: MITM protection was
-achieved, so the link did **not** fall back to Just Works. The pinned
-DisplayOnly + bonding + MITM + secure-connections configuration works on macOS.
+`authenticated=1` in both sessions is the pass condition that matters: MITM
+protection was achieved, so the link did **not** fall back to Just Works. The
+pinned DisplayOnly + bonding + MITM + secure-connections configuration works
+on macOS.
 
-Heap across a real connected session:
+Session 1's 8,799 ms is operator-paced — it includes finding the device in
+System Settings. **799 ms is the real reconnect figure** the spec asks to be
+recorded. macOS reconnected on its own with no prompt, and the bond survived
+both `deinit(true)` and a reboot, confirming that bonds live in NVS and that
+`deinit(clearAll = true)` only destroys the C++ wrapper objects.
+
+In session 2 `onAuthenticationComplete` was logged *before* `onConnect`:
+encryption was re-established from the stored bond fast enough that the two
+callbacks interleaved on the host task. The adapter must not assume these
+arrive in a fixed order.
+
+#### Heap across connected sessions
 
 | Phase | Internal free | Internal largest block |
 | --- | ---: | ---: |
 | Advertising, before connect | 122,900 | 81,908 |
-| Connected and bonded, after 14 reports | 122,008 | 77,812 |
-| After `deinit(true)` | 188,596 | 77,812 |
+| Session 1 connected, first bonding, after 14 reports | 122,008 | 77,812 |
+| Session 1 after `deinit(true)` | 188,596 | 77,812 |
+| Session 2 connected, existing bond, after 14 reports | 122,868 | 81,908 |
+| Session 2 after `deinit(true)` | **189,488** | **114,676** |
 
-Two things differ from the advertise-only cycles, from this single sample:
+Session 2 returns to exactly the advertise-only cycle baseline, byte for byte.
+So the extra 892 B and the 36 KB contiguity loss seen in session 1 were the
+**one-time cost of creating and persisting a new bond**, not a per-session
+penalty. A connected session against an existing bond costs 32 B while live
+and gives all of it back on teardown, with the largest block untouched.
 
-- Free size returns to 188,596, which is 892 B short of the 189,488 an
-  advertise-only cycle returns and 1,140 B short of the pre-init 189,736.
-- The largest contiguous block ends at **77,812**, against 114,676 after
-  advertise-only cycles. A real bonded connection leaves the internal heap
-  measurably more fragmented than advertising alone — about 36 KB worse in
-  contiguity, even though free size is nearly whole.
-
-This is one connected session, not a trend. Stage 8's fifty enter/exit cycles
-are the test that decides whether the contiguity loss repeats or compounds; if
-it compounds, the adapter must keep the stack resident instead of tearing it
-down per use.
+This removes the concern raised after session 1. Tearing the stack down per
+use remains viable; there is no need to keep it resident. Spec section 8's
+fifty enter/exit cycles should still confirm this over a longer run, but on
+the evidence so far nothing compounds.
 
 #### Two spike artifacts, not product defects
 
-- **Six reports were emitted before the link was encrypted.** The probe starts
-  its five-second focus grace at `onConnect`, but authentication did not
-  complete until 20 s later, so the sends at t=17.8 s through t=32.8 s went out
-  before macOS could have subscribed to the report characteristics. Only the
-  reports after t=33.0 s could have reached the host. The real adapter must
-  gate sending on `onAuthenticationComplete`, not on connection.
+- **Session 1 emitted six reports before the link was encrypted.** The probe
+  starts its five-second focus grace at `onConnect`, but first-time
+  authentication did not complete until 20 s later. Session 2, where the bond
+  already existed, had encryption up 5 s before the first send and delivered
+  all fourteen. The real adapter must gate sending on
+  `onAuthenticationComplete`, not on connection.
 - **`onPassKeyDisplay()` never fired.** `NimBLEDevice::setSecurityPasskey()`
   installs a fixed passkey that the stack uses directly, bypassing the
   callback. Stage 6 has to render the passkey on the e-ink screen, so it must
