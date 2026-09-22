@@ -40,6 +40,7 @@
 #include "RecentBookProgress.h"
 #include "RecentBooksStore.h"
 #include "SavedItemsHomeActivity.h"
+#include "activities/RemoteActivity.h"
 #include "components/UITheme.h"
 #include "components/themes/dashboard/DashboardTheme.h"
 #include "components/themes/lyra/LyraCarouselTheme.h"
@@ -67,6 +68,9 @@ enum class HomeMenuAction {
   ReadingStats,
   Bookmarks,
   FileTransfer,
+#if CROSSINK_APP_CAP_BLE_REMOTE
+  BluetoothRemote,
+#endif
   Settings,
 };
 
@@ -77,7 +81,7 @@ struct HomeMenuEntry {
 };
 
 struct HomeMenuEntries {
-  static constexpr int kCapacity = 9;
+  static constexpr int kCapacity = 10;
   std::array<HomeMenuEntry, kCapacity> entries{};
   int count = 0;
 
@@ -314,6 +318,9 @@ void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasRe
   }
 
   items.push({tr(STR_FILE_TRANSFER), Transfer, HomeMenuAction::FileTransfer});
+#if CROSSINK_APP_CAP_BLE_REMOTE
+  items.push({tr(STR_BLE_REMOTE), BluetoothIcon, HomeMenuAction::BluetoothRemote});
+#endif
   items.push({tr(STR_SETTINGS_TITLE), Settings, HomeMenuAction::Settings});
 }
 
@@ -339,6 +346,9 @@ HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats,
   }
 
   items.push({tr(STR_FILE_TRANSFER), Transfer, HomeMenuAction::FileTransfer});
+#if CROSSINK_APP_CAP_BLE_REMOTE
+  items.push({tr(STR_BLE_REMOTE), BluetoothIcon, HomeMenuAction::BluetoothRemote});
+#endif
   return items;
 }
 
@@ -1605,6 +1615,11 @@ void HomeActivity::loop() {
           case HomeMenuAction::Checklists:
             activityManager.goToChecklists();
             break;
+#if CROSSINK_APP_CAP_BLE_REMOTE
+          case HomeMenuAction::BluetoothRemote:
+            onBluetoothRemoteOpen();
+            break;
+#endif
           case HomeMenuAction::RecentBooks:
             onRecentsOpen();
             break;
@@ -1853,6 +1868,11 @@ void HomeActivity::loop() {
       case HomeMenuAction::Checklists:
         activityManager.goToChecklists();
         break;
+#if CROSSINK_APP_CAP_BLE_REMOTE
+      case HomeMenuAction::BluetoothRemote:
+        onBluetoothRemoteOpen();
+        break;
+#endif
       case HomeMenuAction::RecentBooks:
         onRecentsOpen();
         break;
@@ -2432,6 +2452,16 @@ void HomeActivity::onRecentsOpen() { activityManager.goToRecentBooks(); }
 void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
+
+#if CROSSINK_APP_CAP_BLE_REMOTE
+void HomeActivity::onBluetoothRemoteOpen() {
+  // Pushed rather than replacing Home, so leaving the remote returns straight
+  // here. Entry is bonded-only; pairing a new host stays an explicit action in
+  // Settings > Bluetooth Remote.
+  startActivityForResult(std::make_unique<RemoteActivity>(renderer, mappedInput, false),
+                         [this](const ActivityResult&) { requestUpdate(); });
+}
+#endif
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
 

@@ -1,3 +1,4 @@
+#include "AppCapabilities.h"
 #include "LyraTheme.h"
 
 #include <GfxRenderer.h>
@@ -95,6 +96,11 @@ const freeink::Icon* LyraTheme::iconForName(UIIcon icon, uint32_t size) {
         return &icon_wifi_32;
       case UIIcon::Hotspot:
         return &icon_radio_tower_32;
+#if CROSSINK_APP_CAP_BLE_REMOTE
+      // Placeholder glyph; see the note in UiAppHelpers::listIconFor.
+      case UIIcon::BluetoothIcon:
+        return &icon_radio_tower_32;
+#endif
       default:
         return nullptr;
     }

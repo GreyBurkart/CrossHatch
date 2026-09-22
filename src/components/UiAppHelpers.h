@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 
+#include "AppCapabilities.h"
 #include "MappedInputManager.h"
 #include "components/UIScale.h"
 #include "components/UITheme.h"
@@ -105,6 +106,13 @@ inline freeink::ui::BitmapRef listIconFor(const UIIcon icon, const int size = 24
         return freeink::ui::bitmapFromIcon(icon_lyra_library_32);
       case UIIcon::Hotspot:
         return freeink::ui::bitmapFromIcon(icon_radio_tower_32);
+#if CROSSINK_APP_CAP_BLE_REMOTE
+      // Placeholder: the broadcast-antenna glyph stands in for a real
+      // Bluetooth mark, which needs rsvg-convert to rasterize from the lucide
+      // set. Swapping it later is a one-line change here and in LyraTheme.
+      case UIIcon::BluetoothIcon:
+        return freeink::ui::bitmapFromIcon(icon_radio_tower_32);
+#endif
       default:
         return {};
     }
@@ -128,6 +136,10 @@ inline freeink::ui::BitmapRef listIconFor(const UIIcon icon, const int size = 24
       return freeink::ui::bitmapFromIcon(icon_lyra_library_24);
     case UIIcon::Hotspot:
       return freeink::ui::bitmapFromIcon(icon_radio_tower_24);
+#if CROSSINK_APP_CAP_BLE_REMOTE
+    case UIIcon::BluetoothIcon:
+      return freeink::ui::bitmapFromIcon(icon_radio_tower_24);
+#endif
     default:
       return {};
   }

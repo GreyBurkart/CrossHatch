@@ -95,6 +95,9 @@ class HomeActivity final : public Activity {
   void onRecentsOpen();
   void onSettingsOpen();
   void onFileTransferOpen();
+#if CROSSINK_APP_CAP_BLE_REMOTE
+  void onBluetoothRemoteOpen();
+#endif
   void onOpdsBrowserOpen();
   void onReadingStatsOpen();
   void onSavedItemsOpen();

@@ -145,7 +145,8 @@ enum UIIcon {
   Library,
   Wifi,
   Hotspot,
-  Chart
+  Chart,
+  BluetoothIcon
 };
 
 // Default theme implementation (Classic Theme)
