@@ -102,7 +102,6 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 #include "activities/settings/KOReaderSettingsActivity.h"
 #include "activities/settings/OtaUpdateActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
-#include "ble/BleRemoteSpike.h"
 #include "components/UITheme.h"
 #include "components/icons/tablerFilledIcons.h"
 #include "fontIds.h"
@@ -1695,13 +1694,6 @@ void setup() {
     buttonShortcutController.restoreQuickLock(millis(), quickLockResumeTrigger);
     notifyQuickLockChanged(true);
   }
-
-#if defined(CROSSINK_BLE_REMOTE_SPIKE) && CROSSINK_BLE_REMOTE_SPIKE
-  // Stage 0 only: paint the resolved boot screen first so the reader is not
-  // blank while the probe blocks the main loop, then run the probe.
-  (void)activityManager.requestUpdateAndWait();
-  BleRemoteSpike::run();
-#endif
 
   allowSleepAt = millis() + 2000;
 }
