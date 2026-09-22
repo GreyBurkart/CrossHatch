@@ -235,145 +235,154 @@ Three findings carry into the later stages:
 3. A live stack needs 66,836 B of internal DRAM and none of PSRAM, so
    RemoteActivity must not be entered with an EPUB reader still resident.
 
-## Stage 0 hardware test script
+## How it works
 
-Flash the spike image to the X4 Pro through the pogo USB adapter, pair it to a
-Mac, and confirm one arrow key reaches Keynote. The probe is entirely
-serial-driven; the reader's screen shows its normal boot destination
-throughout and does not display the passkey in this Stage 0 build.
+### Using it
 
-### 1. Flash
+Settings > System > Bluetooth Remote.
 
-From the repository root, with the reader attached:
+- **Open Remote** advertises to hosts already paired for 30 seconds, then shows
+  "Not connected".
+- **Pair New Device** advertises openly for 60 seconds. The reader shows a
+  six-digit code; type it on the host. The host must ask for the code — the
+  reader declares DisplayOnly with bonding, MITM, and secure connections, so a
+  silent Just Works pairing is refused.
+- **Profile** cycles Presentation, Media, Navigation, and Custom.
+- **Custom Buttons** assigns one action per slot from the v1 whitelist.
+  Choosing one also switches the active profile to Custom.
+- **Keep Awake While Connected** is off by default. When on, the sleep timer is
+  suspended only while a host is connected and Remote is in the foreground.
+- **Paired Devices** lists up to four bonded hosts with Forget. Forgetting on
+  the reader is only half the job: remove the reader from the host's Bluetooth
+  settings too, or its stale bond will refuse to re-pair.
 
-```bash
-pio run -e x4-pro-blespike -t upload
-```
+### Buttons while Remote is open
 
-If PlatformIO cannot find the port, flash the app partition directly. The
-partition table is unchanged, so only the app image needs writing:
+| Button | Action |
+| --- | --- |
+| PageForward, Right | Next |
+| PageBack, Left | Previous |
+| Confirm | Primary |
+| Back, short press | Escape |
+| Back, long press | Leave Remote |
+| Up / Down | Aux 1 / Aux 2 |
+| Power | Unchanged system behavior |
 
-```bash
-esptool.py --chip esp32s3 --port /dev/cu.usbmodem101 --baud 921600 write_flash 0x10000 .pio/build/x4-pro-blespike/firmware.bin
-```
+None of these reach the reader while Remote is open. Leaving restores the
+previous screen and reading position untouched.
 
-### 2. Open the serial log
+### Profiles
 
-```bash
-pio device monitor -e x4-pro-blespike
-```
+| Profile | Next | Previous | Primary | Escape | Aux 1 | Aux 2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Presentation | Right Arrow | Left Arrow | `B` | Escape | Page Down | Page Up |
+| Media | Scan Next | Scan Previous | Play/Pause | Escape | Volume Up | Volume Down |
+| Navigation | Page Down | Page Up | Enter | Escape | Down Arrow | Up Arrow |
 
-Everything the probe reports is tagged `BLESPIKE`.
+Presentation is verified against Keynote and PowerPoint on macOS only. Anything
+else may work.
 
-### 3. What the log should show
+### Shape of the code
 
-The probe runs immediately after the boot screen paints. Expected sequence:
+- `src/ble/BleRemoteAction.*` — the v1 whitelist, the profile tables, and the
+  translation to HID reports.
+- `src/ble/BleRemoteCore.*` — the connection state machine and the bounded
+  action and event queues. No NimBLE, Arduino, or FreeRTOS headers, which is
+  what makes it testable on the host.
+- `src/ble/BleRemote.*` — the NimBLE adapter, and the only file in the app that
+  includes a NimBLE header.
+- `src/ble/BleRemoteFake.*` — the simulator stand-in. Scripted, not simulated:
+  it models the state machine and queue rules but no radio behavior.
+- `src/activities/RemoteActivity.*` and
+  `src/activities/settings/BluetoothRemoteSettingsActivity.*` — the two screens.
 
-```
-INF BLESPIKE: ==== Stage 0 BLE spike start ====
-INF BLESPIKE: HEAP pre-init           internalFree=... internalLargest=... dmaFree=... psramFree=...
-INF BLESPIKE: HEAP post-init-1        internalFree=... internalLargest=...
-INF BLESPIKE: HEAP post-deinit-1      internalFree=... internalLargest=...
-INF BLESPIKE: CYCLE  2 internalFreeWhileUp=... internalFreeAfterDeinit=...
-...
-INF BLESPIKE: CYCLE 11 internalFreeWhileUp=... internalFreeAfterDeinit=...
-INF BLESPIKE: HEAP post-10-cycles     internalFree=... internalLargest=...
-INF BLESPIKE: re-init after deinit(true): WORKS
-```
+NimBLE callbacks run on the host task and only set atomics or push into a
+bounded queue. Every report is written from the activity loop, and the feature
+adds no FreeRTOS task of its own and no new global.
 
-Read those lines as follows:
+### Three rules the Stage 0 spike forced
 
-- `post-init-1` minus `pre-init` is the cost of a live stack. This is the
-  number the Remote activity has to afford mid-session.
-- `post-deinit-1` compared with `pre-init` says whether `deinit(true)` gives
-  the memory back. If it returns to within a few hundred bytes, teardown is
-  real. If it stays close to `post-init-1`, controller release is one-way and
-  the adapter must keep the stack resident after first use.
-- `CYCLE 2` through `CYCLE 11` must not trend downward. A steady drop of the
-  same amount per cycle is a leak.
-- `re-init after deinit(true): FAILED (one-way release)` means the second
-  `init()` did not come back. That is a documented outcome, not a crash — the
-  probe then skips the pairing window and returns to normal boot.
+1. **Nothing is sent before the link is authenticated.** `Connected` and
+   `Ready` are distinct states. Reports sent to a connected-but-unauthenticated
+   host are silently discarded, which is exactly what happened to six of the
+   spike's fourteen reports during first-time pairing.
+2. **Callback order is not guaranteed.** On a bonded reconnect the hardware
+   delivered `onAuthenticationComplete` *before* `onConnect`. Authentication is
+   accepted from any state, and a late connect cannot demote a ready link.
+3. **The passkey is generated in `onPassKeyDisplay()`.** Configuring a static
+   passkey bypasses that callback entirely, which would leave the screen with
+   nothing to show.
 
-### 4. Pair to the Mac
+### Deliberate deviations from the spec
 
-After the cycle test the probe brings the stack up one last time and opens a
-120-second pairing window:
+- **`begin(mode)`, not `begin(profile)`.** A profile decides which action a
+  slot sends, which is a UI concern with no bearing on the transport. The
+  adapter takes the advertising mode instead and the activity resolves slots.
+- **Radio exclusivity is a Wi-Fi check, not a shared guard.** The spec says to
+  reuse the "network busy" guard those activities already share. There is no
+  such guard: `hasActivityNamed` has exactly one caller, and the network
+  activities are mutually exclusive only because each one replaces the
+  foreground activity. Rather than invent a second flag, Remote refuses to
+  start while Wi-Fi is still up. The reverse direction is already covered,
+  because starting any network activity replaces Remote and its `onExit()`
+  runs `releaseAll()` and tears the stack down.
+- **At most four bonds needs a build flag.** The prebuilt SDK ships
+  `CONFIG_BT_NIMBLE_MAX_BONDS=3`. NimBLE-Arduino compiles its own host, so the
+  build raises it to 4.
 
-```
-INF BLESPIKE: HEAP post-init-final    internalFree=... internalLargest=...
-INF BLESPIKE: PAIR window open for 120 s; device name 'CrossHatch Remote', passkey 424242
-```
+### Where `releaseAll()` runs
 
-On the Mac: **System Settings → Bluetooth**, find **CrossHatch Remote**, click
-Connect, and type **424242** when macOS asks for a code. macOS must ask for a
-code — the reader declares DisplayOnly with bonding, MITM, and secure
-connections, so a silent Just Works pairing would mean the security
-configuration did not take effect. Report it if macOS pairs without prompting.
+`RemoteActivity::onExit()` calls `releaseAll()` and then `end()`, which
+releases again before dropping the link. Because every other path out of Remote
+goes through the activity stack — Back, sleep, USB Drive, OTA, and any network
+activity, all of which replace or pop the foreground activity — `onExit()` is
+the single chokepoint, and the host is never left holding a key.
 
-Expected:
+## Hardware acceptance
 
-```
-INF BLESPIKE: EVENT connect peer=...
-INF BLESPIKE: EVENT passkey-display passkey=424242
-INF BLESPIKE: EVENT auth-complete encrypted=1 authenticated=1 bonded=1
-INF BLESPIKE: PAIR connected after <n> ms; reconnect/connect time recorded
-INF BLESPIKE: HEAP connected          internalFree=... internalLargest=...
-INF BLESPIKE: Focus the target app now; first key in 5 s
-```
+Spec section 8, on the actual X4 Pro through the pogo USB adapter. Status is
+recorded honestly: nothing is marked verified that was not observed.
 
-`encrypted=1 authenticated=1 bonded=1` is the pass condition. `authenticated=0`
-would mean the link came up unauthenticated.
-
-### 5. Key delivery
-
-You get five seconds after `Focus the target app now`. Put a Keynote deck into
-presentation mode, or click into a TextEdit document, and leave it focused.
-
-The probe then sends, one press and one release per action, three seconds
-apart:
-
-- 10 × Right Arrow
-- 3 × Left Arrow
-- 1 × consumer Play/Pause
-
-```
-INF BLESPIKE: SEND keyboard keycode=0x4F (press+release)
-...
-INF BLESPIKE: SEND keyboard keycode=0x50 (press+release)
-...
-INF BLESPIKE: SEND consumer usage=0x00CD (press+release)
-INF BLESPIKE: releaseAll sent
-INF BLESPIKE: HEAP after-send-burst   internalFree=... internalLargest=...
-INF BLESPIKE: bondedHosts=1
-INF BLESPIKE: HEAP post-final-deinit  internalFree=... internalLargest=...
-INF BLESPIKE: ==== Stage 0 BLE spike end ====
-```
-
-What to watch for on the Mac:
-
-- Keynote should advance exactly 10 slides, then go back exactly 3. In
-  TextEdit the cursor should move 10 characters right, then 3 left.
-- **Exactly one** step per `SEND` line. Two steps means the release report is
-  being missed. Continuous movement means a key is stuck.
-- After `releaseAll sent`, nothing further should happen. Hold a finger on the
-  keyboard-free Mac for a few seconds and confirm the text field is idle.
-- Play/Pause should toggle whatever media app is frontmost, or do nothing
-  visible if none is. Either is fine; the log line is the real check.
-
-### 6. What to send back
-
-Paste the whole `BLESPIKE` block. The numbers that decide the gate are the
-`HEAP` lines, the eleven `CYCLE` lines, and the `re-init after deinit(true)`
-verdict. Also say whether macOS asked for the passkey and whether the arrow
-keys moved one step each.
-
-### 7. Afterwards
-
-The spike leaves a real bond on the Mac. Before flashing the Stage 4–9
-firmware, remove **CrossHatch Remote** from System Settings → Bluetooth, or the
-Mac's stale bond will refuse to re-pair. Reflash the normal image with:
+The Stage 0 spike environment `x4-pro-blespike` has been removed now that its
+results are recorded above, so these run against the shipping image:
 
 ```bash
 pio run -e x4-pro -t upload
 ```
+
+| # | Check | Status |
+| --- | --- | --- |
+| 1 | Pair to macOS with passkey; bond survives a reboot | **Verified on the Stage 0 spike**, not yet re-run on the shipping build. Passkey generation moved from a static code to `onPassKeyDisplay()`, so this must be repeated. |
+| 2 | 200 presses in Keynote, including rapid bursts and disconnect while held; no stuck or repeated keys | Not yet tested |
+| 3 | Leave Remote and confirm the previous book reopens at the same page | Not yet tested |
+| 4 | 50 enter/exit cycles; internal heap and largest block before and after, no progressive loss | Not yet tested |
+| 5 | Auto-sleep fires with keep-awake off and does not with it on; host sees a clean disconnect either way | Not yet tested |
+| 6 | Enter USB Drive after Remote and confirm MSC still enumerates | Not yet tested |
+| 7 | Record firmware size, heap numbers, and reconnect time | Firmware size and Stage 0 heap and reconnect numbers recorded above; shipping-build heap not yet measured |
+
+Check 4 is the one that matters most. Stage 0 showed that an advertise-only
+cycle returns to baseline exactly, and that a bonded reconnect does too, but
+the very first bonding cost a one-time 892 B and 32 KB of contiguity. Fifty
+cycles is what proves that stays one-time. If it compounds, the adapter must
+keep the stack resident after first use instead of tearing it down per use.
+
+Check 6 matters because Remote and USB Drive both want exclusive ownership of
+scarce resources — the radio and internal RAM for one, TinyUSB and the
+filesystem for the other. Entering USB Drive replaces the foreground activity,
+so `RemoteActivity::onExit()` releases keys and deinitializes NimBLE first, but
+that ordering deserves a real check on hardware.
+
+### Reading check 4's numbers
+
+For comparison against the Stage 0 figures above, on a device freshly booted to
+Home:
+
+| Phase | Internal free | Internal largest block |
+| --- | ---: | ---: |
+| Before opening Remote the first time | ~189,700 | ~147,400 |
+| With a host connected | ~122,900 | ~81,900 |
+| After leaving Remote | ~189,500 | ~114,700 |
+
+The largest-block figure not returning to ~147,400 is expected and one-time.
+Internal free dropping below ~189,000 across repeated cycles, or the largest
+block falling further on each pass, is the failure this check is looking for.
