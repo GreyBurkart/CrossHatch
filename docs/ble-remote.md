@@ -66,30 +66,58 @@ Note the middle row: simply listing NimBLE in `lib_deps` without referencing it
 already costs about 23 KiB, because PlatformIO builds and links the declared
 library. That cost lands only on X4 Pro images.
 
-### Heap and lifecycle — requires hardware
+### Heap and lifecycle — measured on hardware
 
-**Not yet measured.** These numbers can only come from the device; the spike
-binary below produces them. They are recorded here after the hardware run, and
-nothing in this section is filled in from estimation.
+Measured on the X4 Pro (base MAC `B8:1F:3F:D5:03:D0`) over the pogo USB
+adapter, running `x4-pro-blespike`. The probe fires about 2.5 s into boot,
+just after the first panel refresh completes, so these are post-boot figures
+with the display up and the SD card mounted but no book open.
 
-| Phase | Internal free | Internal largest block |
-| --- | ---: | ---: |
-| Before first `init()` | _pending_ | _pending_ |
-| After `init()` + advertising | _pending_ | _pending_ |
-| After `deinit(true)` | _pending_ | _pending_ |
-| After ten init/deinit cycles | _pending_ | _pending_ |
+All values are bytes, from `heap_caps_get_free_size()` and
+`heap_caps_get_largest_free_block()` with `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`.
+
+| Phase | Internal free | Internal largest block | DMA-capable free | PSRAM free |
+| --- | ---: | ---: | ---: | ---: |
+| Before first `init()` | 189,736 | 147,444 | 182,072 | 8,266,036 |
+| After `init()` + advertising | 122,900 | 81,908 | 115,236 | 8,266,036 |
+| After `deinit(true)` | 189,488 | 114,676 | 181,824 | 8,266,036 |
+| After ten more init/deinit cycles | 189,488 | 114,676 | 181,824 | 8,266,036 |
+
+Ten further cycles reported an identical `122,900` while up and `189,488`
+after teardown on **every** iteration, with no drift in either direction. Two
+independent boots produced byte-for-byte identical figures, so these are
+reproducible rather than a single lucky sample.
 
 | Question | Answer |
 | --- | --- |
-| Does `NimBLEDevice::deinit(true)` return memory? | _pending_ |
-| Does a later `init()` succeed on this SDK? | _pending_ |
-| If release is one-way, keep the stack resident after first use | _pending_ |
+| Does `NimBLEDevice::deinit(true)` return memory? | **Yes.** Internal free returns to within 248 B of the pre-init figure. |
+| Does a later `init()` succeed on this SDK? | **Yes.** Eleven consecutive init/deinit round trips, all successful. |
+| Is controller memory release one-way? | **No.** The adapter may tear the stack down on activity exit rather than keeping it resident. |
 
-For context when reading those numbers: a normal resume-into-partial reading
-session on this hardware already sits at roughly 85–90 KB internal free and
-~49 KB largest block (see `.claude/CONTEXT.md`). The Remote activity has to fit
-in what is left at that point, not in the much larger boot-time headroom, so
-the *delta* across init/deinit matters more than the absolute figures.
+#### What these numbers mean for the design
+
+- **A live stack costs 66,836 B of internal RAM** (189,736 → 122,900). PSRAM
+  free does not move at all across init, so PSRAM is genuinely not a
+  substitute here, exactly as the spec warned. DMA-capable free drops by the
+  same 66,836 B, so the cost is entirely in internal DRAM.
+- **Teardown is real and does not compound.** 248 B is retained after the
+  first `deinit(true)` and nothing further accumulates over ten more cycles.
+  There is no leak to design around, and `BleRemote::end()` can genuinely free
+  the stack on activity exit.
+- **The first init permanently narrows the largest contiguous block by
+  exactly 32,768 B** (147,444 → 114,676), even though free *size* comes back.
+  A small permanent allocation lands inside what was the largest free region
+  and splits it. Like the 248 B, this is a one-time cost: the largest block
+  sits at 114,676 after cycle 1 and never moves again. Any code that needs a
+  large contiguous internal buffer after Remote has been opened once in a
+  session has 32 KB less room to work with.
+- **Remote cannot run with a resident EPUB reader.** `.claude/CONTEXT.md`
+  records a normal partial-reading session at roughly 85–90 KB internal free
+  and ~49 KB largest block. A live stack needs 66,836 B of that. Entering
+  Remote while a reader is still on the activity stack would leave under
+  20 KB free, which is not survivable. Stage 5 must reach RemoteActivity by a
+  route that has already torn the reader down, and must not push it on top of
+  a live reader.
 
 ### Build gate at Stage 0
 
@@ -108,17 +136,18 @@ All five targets built from `feat/ble-remote` at `9f0d4e70`:
 `nimble`, `ble_hs_`, `ble_gap_`, or `esp_bt_controller`, so the C3 and Sticky
 images genuinely gain nothing.
 
-### Known deviations from the spec, to settle at Stage 6
+### Deliberate differences from the spec
 
 - **Bond count.** The prebuilt S3 SDK ships `CONFIG_BT_NIMBLE_MAX_BONDS=3`.
   Because NimBLE-Arduino compiles its own host, the build raises this to 4 from
   `build_flags`, which matches the spec's "at most 4 stored hosts". Bonds still
   live in the 20 KB `nvs` partition.
-- **Device address.** The spike advertises on the chip's public (eFuse MAC)
-  address rather than a persisted static random address. A public address is
-  already stable across reboots, which is what the spec's NVS requirement is
-  for. Whether to switch to a persisted static random address is a Stage 6
-  decision, not a Stage 0 blocker.
+- **Device address — decided.** The reader advertises on the chip's public
+  (eFuse MAC) address instead of the persisted static random address the spec
+  asks for. A public address is already stable across reboots and power loss,
+  which is the entire reason the spec wanted NVS persistence, so the NVS work
+  is skipped. The X4 Pro used for Stage 0 has base MAC `B8:1F:3F:D5:03:D0`;
+  ESP-IDF derives the Bluetooth address from that base.
 
 ---
 
