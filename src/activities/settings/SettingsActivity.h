@@ -50,6 +50,7 @@ enum class SettingAction {
   KeyboardLayouts,
   DownloadFonts,
   ClockSync,
+  BluetoothRemote,
 };
 
 struct SettingInfo {

@@ -24,6 +24,7 @@
 #include "FontSelectionActivity.h"
 #include "FrontlightTimePickerActivity.h"
 #include "KOReaderSettingsActivity.h"
+#include "BluetoothRemoteSettingsActivity.h"
 #include "KeyboardLayoutsActivity.h"
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
@@ -1114,6 +1115,12 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::KeyboardLayouts:
         startActivityForResult(std::make_unique<KeyboardLayoutsActivity>(renderer, mappedInput), resultHandler);
         break;
+#if CROSSINK_APP_CAP_BLE_REMOTE
+      case SettingAction::BluetoothRemote:
+        startActivityForResult(std::make_unique<BluetoothRemoteSettingsActivity>(renderer, mappedInput),
+                               resultHandler);
+        break;
+#endif
       case SettingAction::ClockSync:
         startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput), resultHandler);
         break;
