@@ -75,9 +75,9 @@ StrId profileLabel(ble_remote::Profile profile) {
 
 ble_remote::Profile activeProfile() { return static_cast<ble_remote::Profile>(SETTINGS.bleRemoteProfile); }
 
-// Counting bonds needs the stack briefly. Remote is not running while this
-// screen is open, so bringing it up and straight back down is safe and is the
-// only way to read the bond store.
+// Counting bonds needs the stack briefly, and bringing it up costs about 67 KB
+// of internal RAM. That is far too much to spend just to open this screen, so
+// callers must only do it when the paired-host list is actually shown.
 size_t readBondedHostCount(ble_remote::Adapter& adapter) {
   if (!adapter.begin(ble_remote::AdvertiseMode::BondedOnly)) {
     LOG_ERR(TAG, "could not start adapter to read bonds");
@@ -104,10 +104,8 @@ void BluetoothRemoteSettingsActivity::onEnter() {
   visibleRows = 1;
   dirty = false;
   uiReady = false;
-  {
-    ble_remote::Adapter adapter;
-    bondedHosts = readBondedHostCount(adapter);
-  }
+  bondedHosts = 0;
+  bondedHostsKnown = false;
   rebuildRows();
   applySharedUiTheme(app, uiTarget);
   app.on(ACTION_ROW, &BluetoothRemoteSettingsActivity::onRowEvent, this);
@@ -217,6 +215,12 @@ void BluetoothRemoteSettingsActivity::rebuildRows() {
   }
 }
 
+void BluetoothRemoteSettingsActivity::refreshBondedHosts() {
+  ble_remote::Adapter adapter;
+  bondedHosts = readBondedHostCount(adapter);
+  bondedHostsKnown = true;
+}
+
 void BluetoothRemoteSettingsActivity::cycleProfile() {
   const auto next = static_cast<uint8_t>((SETTINGS.bleRemoteProfile + 1) % ble_remote::PROFILE_COUNT);
   SETTINGS.bleRemoteProfile = next;
@@ -252,13 +256,17 @@ void BluetoothRemoteSettingsActivity::activateRootRow(int index) {
     case ROOT_PAIR_NEW:
       startActivityForResult(std::make_unique<RemoteActivity>(renderer, mappedInput, true),
                              [this](const ActivityResult&) {
-                               ble_remote::Adapter adapter;
-                               bondedHosts = readBondedHostCount(adapter);
+                               // A successful pairing changes the bond count,
+                               // but only refresh it if it was already known.
+                               if (bondedHostsKnown) {
+                                 refreshBondedHosts();
+                               }
                                rebuildRows();
                                requestUpdate();
                              });
       break;
     case ROOT_PAIRED_HOSTS:
+      refreshBondedHosts();
       openView(View::PairedHosts);
       break;
     default:

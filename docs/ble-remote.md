@@ -338,6 +338,36 @@ goes through the activity stack — Back, sleep, USB Drive, OTA, and any network
 activity, all of which replace or pop the foreground activity — `onExit()` is
 the single chokepoint, and the host is never left holding a key.
 
+## Open issues
+
+### Unexplained panic on the Stage 0 spike build — not diagnosed
+
+During Stage 0 testing the X4 Pro panicked on its own, with no reset or
+unplug, and booted into the crash screen. The reader reported "No reason was
+recorded", meaning no software panic message was captured, which points at a
+watchdog or brownout reset rather than an assert or a null dereference. The
+retained backtrace and registers were written to `/crash_report.txt` on the SD
+card and **have not been read**, so the cause is unknown. Nothing below is a
+diagnosis.
+
+What is known:
+
+- It happened on the throwaway `x4-pro-blespike` build, not on the shipping
+  feature. That build blocks `setup()` for up to three minutes, running eleven
+  NimBLE init/deinit cycles and a 120-second advertising window before the main
+  loop ever starts. The shipping feature does none of that: it brings the stack
+  up once from a foreground activity and drives it from the normal loop.
+- The device was booted and exercised repeatedly on that build over roughly an
+  hour, including several forced resets over the USB serial line.
+- A boot captured immediately afterwards was completely clean, with the probe
+  running and reporting its usual figures.
+
+This may well be an artifact of the probe's blocking design rather than
+anything in the feature, but that is an assumption and has not been checked.
+Read `/crash_report.txt` before trusting the feature on hardware, and treat
+hardware acceptance check 2 (200 presses) and check 4 (50 enter/exit cycles) as
+the places this would resurface if it is real.
+
 ## Hardware acceptance
 
 Spec section 8, on the actual X4 Pro through the pogo USB adapter. Status is

@@ -40,6 +40,7 @@ class BluetoothRemoteSettingsActivity final : public Activity {
   void activateCustomSlotRow(int index);
   void activateActionPickerRow(int index);
   void activatePairedHostRow(int index);
+  void refreshBondedHosts();
   void cycleProfile();
   void toggleKeepAwake();
   void rebuildRows();
@@ -55,6 +56,9 @@ class BluetoothRemoteSettingsActivity final : public Activity {
   int editingSlot = 0;
   bool dirty = false;
   size_t bondedHosts = 0;
+  // Reading the bond store costs a full stack bring-up, so it is deferred until
+  // the paired-host list is opened rather than paid on every screen entry.
+  bool bondedHostsKnown = false;
 
   ButtonNavigator buttonNavigator;
   freeink::ui::GfxRendererTarget uiTarget;
