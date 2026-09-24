@@ -80,7 +80,6 @@ class EpubReaderActivity final : public Activity {
 
  private:
   std::shared_ptr<ReflowDocument> document;
-  // Non-owning shared view used only by EPUB-specific compatibility paths.
   // The on-disk settings record also carries the dictionary family. Keeping it
   // out of the long-lived reader object matters on the C3: this activity is
   // allocated immediately before an EPUB section needs its largest block.
@@ -102,6 +101,8 @@ class EpubReaderActivity final : public Activity {
           renderMode(source.renderMode),
           readerSettings(source.readerSettings) {}
   };
+  // Typed co-owner of `document` for EPUB-only paths; null for PDFs. Reset
+  // before `document` on exit so the Epub is released deterministically.
   std::shared_ptr<Epub> epub;
   ActiveBookReaderSettingsData initialBookReaderSettings;
   std::unique_ptr<Section> section = nullptr;
