@@ -70,8 +70,8 @@ std::string bookStatsCachePath(const std::string& path) {
 std::vector<FileBrowserActionActivity::MenuItem> buildBookActionItems(const std::string& fullPath,
                                                                       const bool includeRemoveFromRecents) {
   std::vector<FileBrowserActionActivity::MenuItem> items;
-  // At most 12 small menu entries, retained by the popup across render calls.
-  items.reserve(12);
+  // At most 13 small menu entries, retained by the popup across render calls.
+  items.reserve(13);
   if (crosshatch::trash::isPath(fullPath.c_str())) {
     items.push_back({FileBrowserAction::Restore, StrId::STR_RESTORE});
     items.push_back({FileBrowserAction::Delete, StrId::STR_PERMANENT_DELETE});
@@ -97,6 +97,11 @@ std::vector<FileBrowserActionActivity::MenuItem> buildBookActionItems(const std:
     items.push_back({FileBrowserAction::DeleteStats, StrId::STR_DELETE_BOOK_STATS});
     items.push_back({FileBrowserAction::ToggleCompleted,
                      isBookCompleted(fullPath) ? StrId::STR_MARK_UNFINISHED : StrId::STR_MARK_FINISHED});
+  }
+  // Only offered while the Home entry is enabled; a pin made with the setting off would have no visible effect.
+  if (SETTINGS.pinBookToHome && isReaderDocument(fullPath)) {
+    items.push_back({FileBrowserAction::TogglePinnedToHome,
+                     isBookPinnedToHome(fullPath) ? StrId::STR_UNPIN_FROM_HOME : StrId::STR_PIN_TO_HOME});
   }
   if (includeRemoveFromRecents) {
     items.push_back({FileBrowserAction::RemoveFromRecents, StrId::STR_REMOVE_FROM_RECENTS_ACTION});
@@ -310,6 +315,29 @@ bool toggleBookCompleted(const std::string& fullPath, const std::string& display
                                          !SETTINGS.removeReadBooksFromRecents);
   }
 
+  return true;
+}
+
+bool isBookPinnedToHome(const std::string& fullPath) {
+  return !APP_STATE.pinnedBookPath.empty() && APP_STATE.pinnedBookPath == fullPath;
+}
+
+bool togglePinnedToHome(const std::string& fullPath, bool& pinned) {
+  if (!isReaderDocument(fullPath)) {
+    return false;
+  }
+
+  pinned = !isBookPinnedToHome(fullPath);
+  if (pinned) {
+    APP_STATE.pinnedBookPath = fullPath;
+  } else {
+    APP_STATE.pinnedBookPath.clear();
+  }
+  if (!APP_STATE.saveToFile()) {
+    LOG_ERR("BookActions", "Failed to save pinned book: %s", fullPath.c_str());
+    return false;
+  }
+  LOG_INF("BookActions", "%s Home-pinned book: %s", pinned ? "Set" : "Cleared", fullPath.c_str());
   return true;
 }
 

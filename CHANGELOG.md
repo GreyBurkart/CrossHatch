@@ -14,6 +14,7 @@
 - Recycle Bin / Trash: document deletion now safely moves items to `/trash` on SD storage by default with collision suffixing, allowing safe restoration to original locations or permanent deletion and Empty Trash.
 - Recycle Bin toggle in Settings under Files & Storage to switch between recoverable trash and immediate permanent deletion.
 - Streamlined `x4-pro` and `x4-pro-simulator` build targets with local PlatformIO configuration and native macOS simulator support.
+- Pin a book to Home: turn on Settings → System → Pin Book to Home, then long-press a book and choose Pin to Home. The book gets its own Home entry, separate from Recent Books, and opens at its saved position. The entry appears only when it fits in the current theme's menu without paging, and is not shown in the Lyra Carousel theme.
 
 ### Fixed
 

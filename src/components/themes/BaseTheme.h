@@ -279,6 +279,9 @@ class BaseTheme {
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                               const std::function<const char*(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
+  // True when drawButtonMenu would show all buttonCount rows inside rect on one page, i.e. without paginating
+  // or drawing past rect. Overrides must mirror their own drawButtonMenu row geometry.
+  virtual bool buttonMenuFits(const GfxRenderer& renderer, Rect rect, int buttonCount) const;
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
                                int selectedIndex, bool showConfirmationFooter = false,

@@ -32,6 +32,7 @@ constexpr int homeMenuMargin = 20;
 constexpr int homeMarginTop = 30;
 constexpr int roundedRaffHeaderClockYOffset = 5;
 constexpr int detachedHeaderBatteryTopInset = 5;
+constexpr int buttonMenuMaxVisibleItems = 7;
 
 }  // namespace
 
@@ -751,11 +752,10 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
                                const std::function<const char*(int index)>& buttonLabel,
                                const std::function<UIIcon(int index)>& rowIcon) const {
   (void)rowIcon;
-  constexpr int maxVisibleItems = 7;
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int rowStep = metrics.menuRowHeight + metrics.menuSpacing;
   const int availableHeight = std::max(0, rect.height - metrics.verticalSpacing);
-  const int pageItems = std::clamp((availableHeight + metrics.menuSpacing) / rowStep, 1, maxVisibleItems);
+  const int pageItems = std::clamp((availableHeight + metrics.menuSpacing) / rowStep, 1, buttonMenuMaxVisibleItems);
   const int totalPages = (buttonCount + pageItems - 1) / pageItems;
 
   const int pageStartIndex = (selectedIndex / pageItems) * pageItems;
@@ -818,6 +818,16 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     // Invert text when the tile is selected, to contrast with the filled background
     renderer.drawText(UI_10_FONT_ID, textX, textY, label, selectedIndex != i);
   }
+}
+
+bool BaseTheme::buttonMenuFits(const GfxRenderer& renderer, const Rect rect, const int buttonCount) const {
+  (void)renderer;
+  // Mirrors drawButtonMenu's pageItems, without its clamp to at least one row.
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int rowStep = metrics.menuRowHeight + metrics.menuSpacing;
+  const int availableHeight = std::max(0, rect.height - metrics.verticalSpacing);
+  const int pageItems = std::min((availableHeight + metrics.menuSpacing) / rowStep, buttonMenuMaxVisibleItems);
+  return buttonCount <= pageItems;
 }
 
 Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message) const {

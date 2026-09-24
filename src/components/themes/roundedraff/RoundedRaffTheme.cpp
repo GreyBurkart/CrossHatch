@@ -245,6 +245,12 @@ void RoundedRaffTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int butt
   drawScrollBar(renderer, rect, buttonCount, pageStartIndex, pageItems);
 }
 
+bool RoundedRaffTheme::buttonMenuFits(const GfxRenderer& renderer, const Rect rect, const int buttonCount) const {
+  // Mirrors drawButtonMenu's pageItems, without its clamp to at least one row.
+  const int rowStep = getMenuRowHeight(renderer) + kSelectableRowGap;
+  return buttonCount <= rect.height / rowStep;
+}
+
 void RoundedRaffTheme::drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode,
                                      int contentStartX, int contentWidth) const {
   const auto& metrics = UITheme::getInstance().getMetrics();

@@ -57,6 +57,7 @@ int mainMenuIconYOffset(const UIIcon icon) {
   }
 }
 
+constexpr int buttonMenuMaxVisibleItems = 7;
 }  // namespace
 
 const freeink::Icon* LyraTheme::iconForName(UIIcon icon, uint32_t size) {
@@ -626,7 +627,7 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
                                const std::function<UIIcon(int index)>& rowIcon) const {
   const auto& menuMetrics = UITheme::getInstance().getMetrics();
 
-  constexpr int maxVisibleItems = 7;
+  constexpr int maxVisibleItems = buttonMenuMaxVisibleItems;
   const int pageItems = maxVisibleItems;
   const int totalPages = (buttonCount + pageItems - 1) / pageItems;
 
@@ -696,4 +697,12 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
 
     renderer.drawText(UI_12_FONT_ID, textX, textY, label, true);
   }
+}
+
+bool LyraTheme::buttonMenuFits(const GfxRenderer& renderer, const Rect rect, const int buttonCount) const {
+  (void)renderer;
+  // drawButtonMenu pages every buttonMenuMaxVisibleItems rows but does not bound them to rect, so check both.
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int menuHeight = buttonCount * (metrics.menuRowHeight + metrics.menuSpacing) - metrics.menuSpacing;
+  return buttonCount <= buttonMenuMaxVisibleItems && menuHeight <= rect.height;
 }

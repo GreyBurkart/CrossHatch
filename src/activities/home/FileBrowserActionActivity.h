@@ -37,6 +37,7 @@ enum class FileBrowserAction : int {
   UnpinFolder = 25,
   SwitchDoc = 26,
   LibraryView = 27,
+  TogglePinnedToHome = 28,
 };
 
 class FileBrowserActionActivity final : public Activity {

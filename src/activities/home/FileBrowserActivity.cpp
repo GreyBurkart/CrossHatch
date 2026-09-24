@@ -679,6 +679,7 @@ void FileBrowserActivity::showDirectoryActionMenu(const std::string& entry, bool
                              case FileBrowserAction::UnpinFolder:
                              case FileBrowserAction::SwitchDoc:
                              case FileBrowserAction::LibraryView:
+                             case FileBrowserAction::TogglePinnedToHome:
                                return;
                            }
                          });
@@ -945,6 +946,15 @@ void FileBrowserActivity::showFileActionMenu(const std::string& entry, bool igno
           case FileBrowserAction::UnpinBootFavorite:
             unpinBootFavorite();
             return;
+          case FileBrowserAction::TogglePinnedToHome: {
+            bool pinned = false;
+            if (BookActions::togglePinnedToHome(fullPath, pinned)) {
+              BookActions::drawToast(renderer, pinned ? tr(STR_PINNED_TO_HOME) : tr(STR_UNPINNED_FROM_HOME));
+              delay(1000);
+            }
+            requestUpdate();
+            return;
+          }
           case FileBrowserAction::SetSleepFolder:
           case FileBrowserAction::ClearSleepFolder:
           case FileBrowserAction::RemoveFromRecents:

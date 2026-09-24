@@ -784,6 +784,8 @@ inline const std::vector<SettingInfo>& getBaseSettingsList() {
                             "removeReadBooksFromRecents", StrId::STR_CAT_SYSTEM));
     add(SettingInfo::Toggle(StrId::STR_MOVE_FINISHED_TO_READ, &CrossPointSettings::moveFinishedToReadFolder,
                             "moveFinishedToReadFolder", StrId::STR_CAT_SYSTEM));
+    add(SettingInfo::Toggle(StrId::STR_PIN_BOOK_TO_HOME, &CrossPointSettings::pinBookToHome, "pinBookToHome",
+                            StrId::STR_CAT_SYSTEM));
     add(SettingInfo::Toggle(StrId::STR_RECYCLE_BIN, &CrossPointSettings::recycleBinEnabled, "recycleBinEnabled",
                             StrId::STR_CAT_SYSTEM));
     add(SettingInfo::Toggle(StrId::STR_AUTO_BACKUP_STATS, &CrossPointSettings::autoBackupStats, "autoBackupStats",

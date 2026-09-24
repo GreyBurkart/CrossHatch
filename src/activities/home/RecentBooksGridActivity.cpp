@@ -650,6 +650,15 @@ void RecentBooksGridActivity::showBookActionMenu(const int bookIndex, const bool
                 });
             return;
           }
+          case FileBrowserAction::TogglePinnedToHome: {
+            bool pinned = false;
+            if (BookActions::togglePinnedToHome(book.path, pinned)) {
+              BookActions::drawToast(renderer, pinned ? tr(STR_PINNED_TO_HOME) : tr(STR_UNPINNED_FROM_HOME));
+              delay(1000);
+            }
+            requestUpdate();
+            return;
+          }
           case FileBrowserAction::RemoveFromRecents:
             promptRemoveBook(book.path, book.title);
             return;

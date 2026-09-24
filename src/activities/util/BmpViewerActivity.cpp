@@ -419,6 +419,7 @@ void BmpViewerActivity::showContextMenu() {
                              case FileBrowserAction::UnpinFolder:
                              case FileBrowserAction::SwitchDoc:
                              case FileBrowserAction::LibraryView:
+                             case FileBrowserAction::TogglePinnedToHome:
                                return;
                            }
                          });
