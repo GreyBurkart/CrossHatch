@@ -61,6 +61,7 @@ constexpr int HOME_BOOK_SWAP_RECENT_COUNT = 2;
 enum class HomeMenuAction {
   BrowseFiles,
   ContinueReading,
+  PinnedBook,
   RecentBooks,
   OpdsBrowser,
   ReadingStats,
@@ -76,7 +77,8 @@ struct HomeMenuEntry {
 };
 
 struct HomeMenuEntries {
-  static constexpr int kCapacity = 8;
+  // Continue Reading + Pinned Book + the seven entries appendHomeMenuItems can add.
+  static constexpr int kCapacity = 9;
   std::array<HomeMenuEntry, kCapacity> entries{};
   int count = 0;
 
@@ -321,8 +323,12 @@ HomeMenuEntries buildHomeMenuItems(bool hasOpdsServers, bool hasReadingStats, bo
   return items;
 }
 
-HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks, bool hasClippings) {
+HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks, bool hasClippings,
+                                      const char* pinnedBookLabel) {
   HomeMenuEntries items;
+  if (pinnedBookLabel) {
+    items.push({pinnedBookLabel, Book, HomeMenuAction::PinnedBook});
+  }
   items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
 
   if (hasOpdsServers) {
@@ -339,11 +345,16 @@ HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats,
   return items;
 }
 
+// pinnedBookLabel is null when the pinned-book entry is hidden.
 HomeMenuEntries buildSelectableHomeMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks,
-                                             bool hasClippings, bool includeContinueReading) {
+                                             bool hasClippings, bool includeContinueReading,
+                                             const char* pinnedBookLabel) {
   HomeMenuEntries items;
   if (includeContinueReading) {
     items.push({tr(STR_CONTINUE_READING), Book, HomeMenuAction::ContinueReading});
+  }
+  if (pinnedBookLabel) {
+    items.push({pinnedBookLabel, Book, HomeMenuAction::PinnedBook});
   }
   appendHomeMenuItems(items, hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
   return items;
@@ -588,6 +599,41 @@ int getHomeMenuSelectionOffset(const std::vector<RecentBook>& recentBooks) {
   return metrics.homeContinueReadingInMenu ? 0 : getVisibleRecentBookCount(recentBooks);
 }
 
+int getHomeCoverTileHeight(const ThemeMetrics& metrics, const int pageHeight, const int menuItemCount) {
+  if (SETTINGS.uiTheme != CrossPointSettings::UI_THEME::CLASSIC) {
+    return metrics.homeCoverTileHeight;
+  }
+  // Keep the four always-present actions clear of the button-hint strip on
+  // shorter displays; any optional actions paginate below them.
+  const int menuRows = std::min(4, menuItemCount);
+  const int requiredMenuHeight =
+      metrics.verticalSpacing + menuRows * metrics.menuRowHeight + std::max(0, menuRows - 1) * metrics.menuSpacing;
+  const int maxCoverHeight =
+      pageHeight - metrics.buttonHintsHeight - metrics.homeTopPadding - metrics.homeMenuTopOffset - requiredMenuHeight;
+  return std::clamp(maxCoverHeight, 0, metrics.homeCoverTileHeight);
+}
+
+// Area below the cover tile that list-style themes hand to drawButtonMenu.
+Rect getHomeListMenuRect(const ThemeMetrics& metrics, const int pageWidth, const int pageHeight,
+                         const int coverTileHeight) {
+  const int menuStartY = metrics.homeTopPadding + coverTileHeight + metrics.homeMenuTopOffset;
+  const int menuEndY = pageHeight - metrics.buttonHintsHeight;
+  return Rect{0, menuStartY, pageWidth, std::max(0, menuEndY - menuStartY)};
+}
+
+std::string resolvePinnedBookTitle(const std::string& path) {
+  for (const RecentBook& book : RECENT_BOOKS.getBooks()) {
+    if (book.path == path && !book.title.empty()) {
+      return book.title;
+    }
+  }
+  // Never opened (or dropped from Recent Books): fall back to the file name without its extension.
+  const size_t nameStart = path.rfind('/') == std::string::npos ? 0 : path.rfind('/') + 1;
+  const size_t dot = path.rfind('.');
+  const size_t nameEnd = (dot == std::string::npos || dot < nameStart) ? path.size() : dot;
+  return path.substr(nameStart, nameEnd - nameStart);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -652,28 +698,68 @@ int HomeActivity::getMenuItemCount() const {
   if (hasBookmarks || hasClippings) {
     count++;
   }
+  if (pinnedBookVisible) {
+    count++;
+  }
   return count;
 }
 
-void HomeActivity::loadRecentBooks(int maxBooks) {
+void HomeActivity::loadRecentBooks(int maxBooks, const std::string& excludePath) {
   recentBooks.clear();
   const auto& books = RECENT_BOOKS.getBooks();
   recentBooks.reserve(std::min(static_cast<int>(books.size()), maxBooks));
 
-  for (const RecentBook& storedBook : books) {
-    // Limit to maximum number of recent books
-    if (recentBooks.size() >= maxBooks) {
+  // The visible pinned book has its own Home entry, so leave it out here and let
+  // Continue Reading show the most recent other book. If it is the only book,
+  // show it in both places rather than leaving Continue Reading empty.
+  for (const bool skipExcluded : {true, false}) {
+    for (const RecentBook& storedBook : books) {
+      // Limit to maximum number of recent books
+      if (static_cast<int>(recentBooks.size()) >= maxBooks) {
+        break;
+      }
+
+      if (skipExcluded && !excludePath.empty() && storedBook.path == excludePath) {
+        continue;
+      }
+
+      RecentBook book = storedBook;
+      if (RecentBooksStore::isMissing(book)) {
+        continue;
+      }
+
+      ensureReusableCoverPath(book);
+      recentBooks.push_back(book);
+    }
+    if (!recentBooks.empty() || excludePath.empty()) {
       break;
     }
-
-    RecentBook book = storedBook;
-    if (RecentBooksStore::isMissing(book)) {
-      continue;
-    }
-
-    ensureReusableCoverPath(book);
-    recentBooks.push_back(book);
   }
+}
+
+bool HomeActivity::pinnedBookFitsOnHome(const bool hasContinueReadingRow) const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const char* probeLabel = pinnedBookTitle.c_str();
+  // Reading Stats can appear or disappear as the highlighted book changes, so
+  // assume it is present: the pinned row should not come and go while browsing.
+  constexpr bool assumeReadingStats = true;
+
+  if (usesMinimalHomeInteraction()) {
+    const auto menuItems =
+        buildMinimalMenuItems(hasOpdsServers, assumeReadingStats, hasBookmarks, hasClippings, probeLabel);
+    const Rect menuRect{0, metrics.homeTopPadding, pageWidth,
+                        pageHeight - metrics.homeTopPadding - metrics.buttonHintsHeight};
+    return GUI.buttonMenuFits(renderer, menuRect, static_cast<int>(menuItems.size()));
+  }
+
+  const auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, assumeReadingStats, hasBookmarks, hasClippings,
+                                                      hasContinueReadingRow, probeLabel);
+  const int menuCount = static_cast<int>(menuItems.size());
+  const Rect menuRect =
+      getHomeListMenuRect(metrics, pageWidth, pageHeight, getHomeCoverTileHeight(metrics, pageHeight, menuCount));
+  return GUI.buttonMenuFits(renderer, menuRect, menuCount);
 }
 
 void HomeActivity::loadAllBookStats() {
@@ -918,7 +1004,30 @@ void HomeActivity::onEnter() {
   const int recentBooksToLoad =
       std::min(kMaxCachedBooks, std::max(metrics.homeRecentBooksCount, HOME_BOOK_SWAP_RECENT_COUNT));
   RECENT_BOOKS.ensureLoaded();
-  loadRecentBooks(recentBooksToLoad);
+
+  pinnedBookVisible = false;
+  pinnedBookTitle.clear();
+  const std::string& pinnedPath = APP_STATE.pinnedBookPath;
+  // The carousel's icon-only menu strip cannot identify a book, so it never shows the entry.
+  if (SETTINGS.pinBookToHome && !isCarouselTheme && !pinnedPath.empty() && Storage.exists(pinnedPath.c_str())) {
+    // Continue Reading only takes a menu row when some recent book exists; the
+    // pinned book itself counts because loadRecentBooks falls back to it.
+    bool hasContinueReadingRow = false;
+    if (metrics.homeContinueReadingInMenu) {
+      for (const RecentBook& book : RECENT_BOOKS.getBooks()) {
+        if (!RecentBooksStore::isMissing(book)) {
+          hasContinueReadingRow = true;
+          break;
+        }
+      }
+    }
+    pinnedBookTitle = resolvePinnedBookTitle(pinnedPath);
+    pinnedBookVisible = pinnedBookFitsOnHome(hasContinueReadingRow);
+    if (!pinnedBookVisible) {
+      LOG_DBG("HOME", "Pinned book hidden: not enough room in this theme/orientation");
+    }
+  }
+  loadRecentBooks(recentBooksToLoad, pinnedBookVisible ? pinnedPath : std::string{});
 
   const auto selectInitialBook = [this, &metrics](const std::string& path) {
     if (path.empty()) {
@@ -956,10 +1065,23 @@ void HomeActivity::onEnter() {
   if (initialMenuItem != HomeMenuItem::NONE) {
     const bool includeContinueReading = metrics.homeContinueReadingInMenu && !recentBooks.empty();
     const auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
-                                                        includeContinueReading);
+                                                        includeContinueReading, getPinnedBookLabel());
     const int menuIndex = findMenuActionIndex(menuItems, homeActionForInitialMenuItem(initialMenuItem));
     if (menuIndex >= 0) {
       selectorIndex = getHomeMenuSelectionOffset(recentBooks) + menuIndex;
+    }
+  } else if (pinnedBookVisible && !usesMinimalHomeInteraction()) {
+    // Returning from the pinned book highlights its entry, as returning from a
+    // recent book highlights that book.
+    const std::string& returningFromPath = initialBookPath.empty() ? APP_STATE.openEpubPath : initialBookPath;
+    if (returningFromPath == APP_STATE.pinnedBookPath) {
+      const bool includeContinueReading = metrics.homeContinueReadingInMenu && !recentBooks.empty();
+      const auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
+                                                          includeContinueReading, getPinnedBookLabel());
+      const int menuIndex = findMenuActionIndex(menuItems, HomeMenuAction::PinnedBook);
+      if (menuIndex >= 0) {
+        selectorIndex = getHomeMenuSelectionOffset(recentBooks) + menuIndex;
+      }
     }
   }
 
@@ -1580,7 +1702,8 @@ void HomeActivity::loop() {
     }
 
     if (minimalMenuOpen) {
-      const auto menuItems = buildMinimalMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
+      const auto menuItems =
+          buildMinimalMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings, getPinnedBookLabel());
       const int menuCount = static_cast<int>(menuItems.size());
       if (menuCount <= 0) {
         minimalMenuOpen = false;
@@ -1595,6 +1718,9 @@ void HomeActivity::loop() {
 
       auto activateMinimalMenuAction = [this, &menuItems]() {
         switch (menuItems[minimalMenuIndex].action) {
+          case HomeMenuAction::PinnedBook:
+            onPinnedBookOpen();
+            break;
           case HomeMenuAction::BrowseFiles:
             onFileBrowserOpen();
             break;
@@ -1843,6 +1969,9 @@ void HomeActivity::loop() {
       case HomeMenuAction::ContinueReading:
         onContinueReading();
         break;
+      case HomeMenuAction::PinnedBook:
+        onPinnedBookOpen();
+        break;
       case HomeMenuAction::RecentBooks:
         onRecentsOpen();
         break;
@@ -1871,8 +2000,9 @@ void HomeActivity::loop() {
       return;
     }
 
-    auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
-                                                  metrics.homeContinueReadingInMenu && !recentBooks.empty());
+    auto menuItems =
+        buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
+                                     metrics.homeContinueReadingInMenu && !recentBooks.empty(), getPinnedBookLabel());
     const int menuSelectedIndex = selectorIndex - getHomeMenuSelectionOffset(recentBooks);
     if (menuSelectedIndex < 0 || menuSelectedIndex >= static_cast<int>(menuItems.size())) {
       return;
@@ -2053,8 +2183,9 @@ void HomeActivity::loop() {
     }
   } else {
     const auto& metrics = UITheme::getInstance().getMetrics();
-    const auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
-                                                        metrics.homeContinueReadingInMenu && !recentBooks.empty());
+    const auto menuItems =
+        buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
+                                     metrics.homeContinueReadingInMenu && !recentBooks.empty(), getPinnedBookLabel());
     auto handleTouch = [&](const bool activate) {
       int touchedBookIndex = -1;
       if (activate ? mappedInput.wasCoverTapped(touchedBookIndex) : mappedInput.wasCoverTouchedDown(touchedBookIndex)) {
@@ -2166,7 +2297,8 @@ void HomeActivity::render(RenderLock&&) {
 
     if (minimalMenuOpen) {
       GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr);
-      const auto menuItems = buildMinimalMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
+      const auto menuItems =
+          buildMinimalMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings, getPinnedBookLabel());
       GUI.drawButtonMenu(
           renderer, Rect{0, metrics.homeTopPadding, pageWidth, pageHeight - metrics.homeTopPadding},
           static_cast<int>(menuItems.size()), minimalMenuIndex,
@@ -2280,19 +2412,10 @@ void HomeActivity::render(RenderLock&&) {
   renderer.clearScreen();
   bool bufferRestored = coverBufferStored && restoreCoverBuffer();
 
-  auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
-                                                metrics.homeContinueReadingInMenu && !recentBooks.empty());
-  int homeCoverTileHeight = metrics.homeCoverTileHeight;
-  if (SETTINGS.uiTheme == CrossPointSettings::UI_THEME::CLASSIC) {
-    // Keep the four always-present actions clear of the button-hint strip on
-    // shorter displays; any optional actions paginate below them.
-    const int menuRows = std::min(4, static_cast<int>(menuItems.size()));
-    const int requiredMenuHeight =
-        metrics.verticalSpacing + menuRows * metrics.menuRowHeight + std::max(0, menuRows - 1) * metrics.menuSpacing;
-    const int maxCoverHeight = pageHeight - metrics.buttonHintsHeight - metrics.homeTopPadding -
-                               metrics.homeMenuTopOffset - requiredMenuHeight;
-    homeCoverTileHeight = std::clamp(maxCoverHeight, 0, metrics.homeCoverTileHeight);
-  }
+  auto menuItems =
+      buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
+                                   metrics.homeContinueReadingInMenu && !recentBooks.empty(), getPinnedBookLabel());
+  const int homeCoverTileHeight = getHomeCoverTileHeight(metrics, pageHeight, static_cast<int>(menuItems.size()));
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding},
                  metrics.homeContinueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
@@ -2310,9 +2433,7 @@ void HomeActivity::render(RenderLock&&) {
                           std::bind(&HomeActivity::storeCoverBuffer, this),
                           hasAnyBookStats(currentBookStats) ? &currentBookStats : nullptr, currentBookProgressPercent);
 
-  const int menuStartY = metrics.homeTopPadding + homeCoverTileHeight + metrics.homeMenuTopOffset;
-  const int menuEndY = pageHeight - metrics.buttonHintsHeight;
-  const int menuHeight = std::max(0, menuEndY - menuStartY);
+  const Rect menuRect = getHomeListMenuRect(metrics, pageWidth, pageHeight, homeCoverTileHeight);
 
   const bool isCarouselTheme =
       static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
@@ -2320,7 +2441,7 @@ void HomeActivity::render(RenderLock&&) {
                                     ? carouselMenuTouchDownIndex
                                     : selectorIndex - getHomeMenuSelectionOffset(recentBooks);
   GUI.drawButtonMenu(
-      renderer, Rect{0, menuStartY, pageWidth, menuHeight}, static_cast<int>(menuItems.size()), menuSelectedIndex,
+      renderer, menuRect, static_cast<int>(menuItems.size()), menuSelectedIndex,
       [&menuItems](int index) { return menuItems[index].label; },
       [&menuItems](int index) { return menuItems[index].icon; });
 
@@ -2405,6 +2526,14 @@ void HomeActivity::onSelectBook(const std::string& path) {
 }
 
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
+
+void HomeActivity::onPinnedBookOpen() {
+  // Copy: onSelectBook starts the reader, which may rewrite APP_STATE.
+  const std::string path = APP_STATE.pinnedBookPath;
+  if (!path.empty()) {
+    onSelectBook(path);
+  }
+}
 
 void HomeActivity::onContinueReading() {
   if (recentBooks.empty()) return;

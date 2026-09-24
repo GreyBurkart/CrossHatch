@@ -98,6 +98,7 @@ void CrossPointState::toJson(JsonDocument& doc) const {
   doc["recentSleepPos"] = recentSleepPos;
   doc["recentSleepFill"] = recentSleepFill;
   doc["favoriteBootImagePath"] = favoriteBootImagePath;
+  doc["pinnedBookPath"] = pinnedBookPath;
   JsonArray recentBootArr = doc["recentBootImages"].to<JsonArray>();
   for (int i = 0; i < BOOT_RECENT_COUNT; i++) recentBootArr.add(recentBootImages[i]);
   doc["recentBootPos"] = recentBootPos;
@@ -144,6 +145,7 @@ bool CrossPointState::fromJson(JsonVariantConst doc) {
     if (legacy != UINT8_MAX) pushRecentSleep(static_cast<uint16_t>(legacy));
   }
   favoriteBootImagePath = doc["favoriteBootImagePath"] | "";
+  pinnedBookPath = doc["pinnedBookPath"] | "";
   std::fill_n(recentBootImages, BOOT_RECENT_COUNT, static_cast<uint16_t>(0));
   JsonArrayConst recentBootArr = doc["recentBootImages"];
   const int actualBootCount =

@@ -23,6 +23,9 @@ uint8_t epubRenderModeForDisplayIndex(uint8_t displayIndex);
 std::string confirmationHeading(StrId actionLabelId);
 bool isBookCompleted(const std::string& fullPath);
 bool toggleBookCompleted(const std::string& fullPath, const std::string& displayName, bool& completed);
+bool isBookPinnedToHome(const std::string& fullPath);
+// Pins fullPath as the single Home-pinned book (replacing any previous pin), or unpins it if it is already the pin.
+bool togglePinnedToHome(const std::string& fullPath, bool& pinned);
 void drawToast(const GfxRenderer& renderer, const char* msg);
 
 }  // namespace BookActions

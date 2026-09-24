@@ -31,6 +31,12 @@ bool hasReadingStats(const std::string& path) {
   return FsHelpers::hasEpubExtension(path) || FsHelpers::hasXtcExtension(path);
 }
 
+// Formats ReaderActivity opens and resumes, i.e. the ones a Home entry can launch.
+bool isPinnableBook(const std::string& path) {
+  return FsHelpers::hasEpubExtension(path) || FsHelpers::hasXtcExtension(path) || FsHelpers::hasTxtExtension(path) ||
+         FsHelpers::hasMarkdownExtension(path);
+}
+
 std::string bookStatsCachePath(const std::string& path) {
   if (FsHelpers::hasEpubExtension(path)) {
     return Epub(path, "/.crosspoint").getCachePath();
@@ -46,7 +52,7 @@ std::string bookStatsCachePath(const std::string& path) {
 std::vector<FileBrowserActionActivity::MenuItem> buildBookActionItems(const std::string& fullPath,
                                                                       const bool includeRemoveFromRecents) {
   std::vector<FileBrowserActionActivity::MenuItem> items;
-  items.reserve(includeRemoveFromRecents ? 7 : 6);
+  items.reserve(includeRemoveFromRecents ? 8 : 7);
   items.push_back({FileBrowserAction::Delete, StrId::STR_DELETE});
   if (hasClearableBookCache(fullPath)) {
     items.push_back({FileBrowserAction::DeleteCache, StrId::STR_DELETE_CACHE});
@@ -59,6 +65,11 @@ std::vector<FileBrowserActionActivity::MenuItem> buildBookActionItems(const std:
     items.push_back({FileBrowserAction::DeleteStats, StrId::STR_DELETE_BOOK_STATS});
     items.push_back({FileBrowserAction::ToggleCompleted,
                      isBookCompleted(fullPath) ? StrId::STR_MARK_UNFINISHED : StrId::STR_MARK_FINISHED});
+  }
+  // Only offered while the Home entry is enabled; a pin made with the setting off would have no visible effect.
+  if (SETTINGS.pinBookToHome && isPinnableBook(fullPath)) {
+    items.push_back({FileBrowserAction::TogglePinnedToHome,
+                     isBookPinnedToHome(fullPath) ? StrId::STR_UNPIN_FROM_HOME : StrId::STR_PIN_TO_HOME});
   }
   if (includeRemoveFromRecents) {
     items.push_back({FileBrowserAction::RemoveFromRecents, StrId::STR_REMOVE_FROM_RECENTS_ACTION});
@@ -224,6 +235,29 @@ bool toggleBookCompleted(const std::string& fullPath, const std::string& display
                                          !SETTINGS.removeReadBooksFromRecents);
   }
 
+  return true;
+}
+
+bool isBookPinnedToHome(const std::string& fullPath) {
+  return !APP_STATE.pinnedBookPath.empty() && APP_STATE.pinnedBookPath == fullPath;
+}
+
+bool togglePinnedToHome(const std::string& fullPath, bool& pinned) {
+  if (!isPinnableBook(fullPath)) {
+    return false;
+  }
+
+  pinned = !isBookPinnedToHome(fullPath);
+  if (pinned) {
+    APP_STATE.pinnedBookPath = fullPath;
+  } else {
+    APP_STATE.pinnedBookPath.clear();
+  }
+  if (!APP_STATE.saveToFile()) {
+    LOG_ERR("BookActions", "Failed to save pinned book: %s", fullPath.c_str());
+    return false;
+  }
+  LOG_INF("BookActions", "%s Home-pinned book: %s", pinned ? "Set" : "Cleared", fullPath.c_str());
   return true;
 }
 

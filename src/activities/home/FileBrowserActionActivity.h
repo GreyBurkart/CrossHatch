@@ -27,6 +27,7 @@ enum class FileBrowserAction : int {
   SendNearby = 15,
   PinBootFavorite = 16,
   UnpinBootFavorite = 17,
+  TogglePinnedToHome = 18,
 };
 
 class FileBrowserActionActivity final : public Activity {

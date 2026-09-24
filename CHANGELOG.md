@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Added
+
+- Pin a book to Home: turn on Settings → System → Pin Book to Home, then long-press a book and choose Pin to Home. The book gets its own Home entry, separate from Recent Books, and opens at its saved position. The entry appears only when it fits in the current theme's menu without paging, and is not shown in the Lyra Carousel theme.
+
 ## [v1.5.1] - 2026-09-10
 
 ### Added

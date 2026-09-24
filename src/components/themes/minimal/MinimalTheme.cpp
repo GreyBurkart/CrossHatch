@@ -799,3 +799,9 @@ void MinimalTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCo
                    label, labelText);
   }
 }
+
+bool MinimalTheme::buttonMenuFits(const GfxRenderer& renderer, const Rect rect, const int buttonCount) const {
+  // drawButtonMenu ignores rect and anchors an unpaginated panel at kMenuPanelTop.
+  const Rect panel = buttonMenuPanelRect(renderer, buttonCount);
+  return panel.y >= rect.y && panel.y + panel.height <= rect.y + rect.height;
+}

@@ -28,6 +28,8 @@ class CrossPointState : public PersistableStore<CrossPointState> {
   uint8_t recentSleepPos = 0;                           // next write slot
   uint8_t recentSleepFill = 0;                          // valid entries (0..SLEEP_RECENT_COUNT)
   std::string favoriteBootImagePath;
+  // Book given its own Home entry via "Pin to Home"; shown only while SETTINGS.pinBookToHome is on.
+  std::string pinnedBookPath;
   uint16_t recentBootImages[BOOT_RECENT_COUNT] = {};  // circular buffer of recent boot-screen indices
   uint8_t recentBootPos = 0;                          // next write slot
   uint8_t recentBootFill = 0;                         // valid entries (0..BOOT_RECENT_COUNT)

@@ -44,6 +44,9 @@ class HomeActivity final : public Activity {
   bool hasBookmarks = false;
   bool hasClippings = false;
   bool hasOpdsServers = false;
+  // Resolved in onEnter(): pinning enabled, file present, and the extra row fits this theme's menu.
+  bool pinnedBookVisible = false;
+  std::string pinnedBookTitle;
   bool minimalMenuOpen = false;
   bool minimalSuppressInitialFrontRelease = false;
   bool homeBookSwapLongPressHandled = false;
@@ -91,6 +94,7 @@ class HomeActivity final : public Activity {
 
   void onSelectBook(const std::string& path);
   void onFileBrowserOpen();
+  void onPinnedBookOpen();
   void onContinueReading();
   void onRecentsOpen();
   void onSettingsOpen();
@@ -100,6 +104,8 @@ class HomeActivity final : public Activity {
   void onSavedItemsOpen();
 
   int getMenuItemCount() const;
+  const char* getPinnedBookLabel() const { return pinnedBookVisible ? pinnedBookTitle.c_str() : nullptr; }
+  bool pinnedBookFitsOnHome(bool hasContinueReadingRow) const;
   bool storeCoverBuffer();    // Store frame buffer for cover image
   bool restoreCoverBuffer();  // Restore frame buffer from stored cover
   void freeCoverBuffer();     // Free the stored cover buffer
@@ -122,7 +128,7 @@ class HomeActivity final : public Activity {
   bool canSwapHomeBook() const;
   void showNextRecentBookOnHome();
   void updateHighlightedBookContext(bool allowEpubLoad = true);
-  void loadRecentBooks(int maxBooks);
+  void loadRecentBooks(int maxBooks, const std::string& excludePath);
   void loadAllBookStats();
   void loadRecentCovers(int coverHeight);
 
