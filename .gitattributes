@@ -1,1 +1,3 @@
 .github/workflows/*.lock.yml linguist-generated=true
+test/pdf_reflow_core/fixtures/** -text
+test/pdf_reflow_core/fixtures/*.pdf binary

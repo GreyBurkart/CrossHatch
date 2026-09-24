@@ -242,23 +242,60 @@ RecentBook recentBookForPath(const std::string& path) {
   return loadedBook;
 }
 
-std::string bookStatsCachePathFor(const std::string& path) {
+std::string bookStatsCachePathFor(const std::string& path
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+                                  ,
+                                  const char* const pdfCacheRoot = nullptr
+#endif
+) {
   if (FsHelpers::hasEpubExtension(path)) {
     return Epub::cachePathForFilePath(path, "/.crosspoint");
   }
   if (FsHelpers::hasXtcExtension(path)) {
     return Xtc(path, "/.crosspoint").getCachePath();
   }
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  // Reuse the already-resolved product root without another resolver call.
+  if (FsHelpers::hasPdfExtension(path)) {
+    return pdfCacheRoot != nullptr ? pdfCacheRoot : "";
+  }
+#endif
   return {};
 }
 
-BookReadingStats loadBookStatsForPath(const std::string& path) {
+BookReadingStats loadBookStatsForPath(const std::string& path
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+                                      ,
+                                      const char* const pdfCacheRoot = nullptr
+#endif
+) {
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  const std::string cachePath = bookStatsCachePathFor(path, pdfCacheRoot);
+#else
   const std::string cachePath = bookStatsCachePathFor(path);
+#endif
   if (cachePath.empty()) {
     return BookReadingStats{};
   }
   return BookReadingStats::load(cachePath);
 }
+
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+bool sleepModeUsesBookProducts() {
+  switch (SETTINGS.sleepScreen) {
+    case CrossPointSettings::SLEEP_SCREEN_MODE::COVER:
+    case CrossPointSettings::SLEEP_SCREEN_MODE::READING_STATS_SLEEP:
+    case CrossPointSettings::SLEEP_SCREEN_MODE::MINIMAL_SLEEP:
+    case CrossPointSettings::SLEEP_SCREEN_MODE::MINIMAL_STATS_SLEEP:
+    case CrossPointSettings::SLEEP_SCREEN_MODE::DASHBOARD_SLEEP:
+      return true;
+    case CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM:
+      return APP_STATE.lastSleepFromReader;
+    default:
+      return false;
+  }
+}
+#endif
 
 std::string loadChapterTitleForPath(const std::string& path) {
   if (!FsHelpers::hasEpubExtension(path)) {
@@ -491,8 +528,40 @@ bool selectRandomSleepImage(SleepImageMode mode, SleepImageSelection& selection,
 
 }  // namespace
 
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+void SleepActivity::loadPdfSleepProducts(const std::string& path) {
+  pdfCachedBook = recentBookForPath(path);
+  pdfCachedBook.title = filenameFromPath(path);
+  pdfCachedBook.author.clear();
+  pdfCachedBook.coverBmpPath.clear();
+  pdfCachedChapter.clear();
+  pdfCachedProgress = 0.0f;
+  pdfBookHydrated = true;
+  if (!pdfSleepProductCache.load(path)) {
+    return;
+  }
+  if (pdfSleepProductCache.title()[0] != '\0') {
+    pdfCachedBook.title = pdfSleepProductCache.title();
+  }
+  pdfCachedBook.author = pdfSleepProductCache.author();
+  pdfCachedBook.coverBmpPath = pdfSleepProductCache.thumbnailPath();
+  pdfCachedChapter = pdfSleepProductCache.chapter();
+  pdfCachedProgress = pdfSleepProductCache.progressPercent();
+}
+#endif
+
 void SleepActivity::onEnter() {
   Activity::onEnter();
+
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  // One PDF product-cache allocation lifecycle per Sleep activity.
+  pdfSleepProductCache.reset();
+  pdfCachedBook = {};
+  pdfCachedChapter.clear();
+  pdfCachedProgress = 0.0f;
+  pdfBookHydrated = false;
+#endif
+
   const bool renderQuickResume =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
       (fromTimeout &&
@@ -516,6 +585,13 @@ void SleepActivity::onEnter() {
   if (sleepScreenUsesRecentBooks && !recentBookPath.empty()) {
     RECENT_BOOKS.ensureLoaded();
   }
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  // PDF title, cover and progress live in the PDF cache manifest, not the EPUB
+  // cover/stats helpers used below.
+  if (sleepModeUsesBookProducts() && FsHelpers::hasPdfExtension(recentBookPath)) {
+    loadPdfSleepProducts(recentBookPath);
+  }
+#endif
 
   overlayBackgroundBufferStored =
       sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::OVERLAY && renderer.storeBwBuffer();
@@ -757,7 +833,7 @@ void SleepActivity::renderCoverSleepScreen() const {
       break;
   }
 
-  const std::string& path = currentBookPath.empty() ? APP_STATE.openEpubPath : currentBookPath;
+  const std::string& path = currentBookPath.empty() ? APP_STATE.openBookPath() : currentBookPath;
   if (path.empty()) {
     return (this->*renderNoCoverSleepScreen)();
   }
@@ -765,8 +841,17 @@ void SleepActivity::renderCoverSleepScreen() const {
   const bool absolute = renderer.supportsAbsoluteGrayscale() &&
                         SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
   bool cropped = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  const bool isPdf = pdfBookHydrated && FsHelpers::hasPdfExtension(path);
+  std::string coverBmpPath =
+      isPdf ? pdfSleepProductCache.coverPath() : SleepCoverAssets::cachedCoverPathFor(path, cropped, absolute);
+  const bool mayPrepareCover = !isPdf;
+#else
   std::string coverBmpPath = SleepCoverAssets::cachedCoverPathFor(path, cropped, absolute);
-  if (coverBmpPath.empty() && SleepCoverAssets::prepareFullCoverForPath(path, cropped, &renderer, absolute)) {
+  constexpr bool mayPrepareCover = true;
+#endif
+  if (mayPrepareCover && coverBmpPath.empty() &&
+      SleepCoverAssets::prepareFullCoverForPath(path, cropped, &renderer, absolute)) {
     coverBmpPath = SleepCoverAssets::cachedCoverPathFor(path, cropped, absolute);
   }
   if (coverBmpPath.empty()) {
@@ -793,13 +878,25 @@ void SleepActivity::renderReadingStatsSleepScreen() const {
   std::string bookTitle = tr(STR_READING_STATS);
   float progressPercent = -1.0f;
 
-  const std::string& path = currentBookPath.empty() ? APP_STATE.openEpubPath : currentBookPath;
+  const std::string& path = currentBookPath.empty() ? APP_STATE.openBookPath() : currentBookPath;
   if (!path.empty()) {
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+    const bool isPdf = pdfBookHydrated && FsHelpers::hasPdfExtension(path);
+    if (isPdf) {
+      bookTitle = pdfCachedBook.title;
+      progressPercent = pdfCachedProgress;
+    } else {
+      const std::string recentTitle = recentTitleForPath(path);
+      bookTitle = recentTitle.empty() ? filenameFromPath(path) : recentTitle;
+      progressPercent = RecentBookProgress::loadPercent(recentBookForPath(path));
+    }
+    bookStats = loadBookStatsForPath(path, isPdf ? pdfSleepProductCache.cacheRoot() : nullptr);
+#else
     const std::string recentTitle = recentTitleForPath(path);
     bookTitle = recentTitle.empty() ? filenameFromPath(path) : recentTitle;
-
     bookStats = loadBookStatsForPath(path);
     progressPercent = RecentBookProgress::loadPercent(recentBookForPath(path));
+#endif
   }
 
   if (!halClock.isAvailable()) {
@@ -819,39 +916,62 @@ void SleepActivity::renderReadingStatsSleepScreen() const {
 }
 
 void SleepActivity::renderMinimalSleepScreen() const {
-  const std::string& path = currentBookPath.empty() ? APP_STATE.openEpubPath : currentBookPath;
+  const std::string& path = currentBookPath.empty() ? APP_STATE.openBookPath() : currentBookPath;
   if (path.empty()) {
     return renderDefaultSleepScreen();
   }
 
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  const bool isPdf = pdfBookHydrated && FsHelpers::hasPdfExtension(path);
+  RecentBook book = isPdf ? pdfCachedBook : recentBookForPath(path);
+  book.coverBmpPath = isPdf ? pdfSleepProductCache.thumbnailPath() : SleepCoverAssets::cachedMinimalCoverPathFor(path);
+  if (!isPdf && book.coverBmpPath.empty() && SleepCoverAssets::prepareMinimalCoverForPath(path, &renderer)) {
+    book.coverBmpPath = SleepCoverAssets::cachedMinimalCoverPathFor(path);
+  }
+
+  const BookReadingStats bookStats = loadBookStatsForPath(path, isPdf ? pdfSleepProductCache.cacheRoot() : nullptr);
+  const float progressPercent = isPdf ? pdfCachedProgress : RecentBookProgress::loadPercent(book);
+#else
   RecentBook book = recentBookForPath(path);
   book.coverBmpPath = SleepCoverAssets::cachedMinimalCoverPathFor(path);
   if (book.coverBmpPath.empty() && SleepCoverAssets::prepareMinimalCoverForPath(path, &renderer)) {
     book.coverBmpPath = SleepCoverAssets::cachedMinimalCoverPathFor(path);
   }
-
   const BookReadingStats bookStats = loadBookStatsForPath(path);
   const float progressPercent = RecentBookProgress::loadPercent(book);
+#endif
   MinimalTheme theme;
   theme.drawSleepScreen(renderer, book, &bookStats, progressPercent, sleepCoverFilterInvertsGeneratedScreen());
   renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
 void SleepActivity::renderMinimalStatsSleepScreen() const {
-  const std::string& path = currentBookPath.empty() ? APP_STATE.openEpubPath : currentBookPath;
+  const std::string& path = currentBookPath.empty() ? APP_STATE.openBookPath() : currentBookPath;
   if (path.empty()) {
     return renderDefaultSleepScreen();
   }
 
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  const bool isPdf = pdfBookHydrated && FsHelpers::hasPdfExtension(path);
+  RecentBook book = isPdf ? pdfCachedBook : recentBookForPath(path);
+  book.coverBmpPath = isPdf ? pdfSleepProductCache.thumbnailPath() : SleepCoverAssets::cachedMinimalCoverPathFor(path);
+  if (!isPdf && book.coverBmpPath.empty() && SleepCoverAssets::prepareMinimalCoverForPath(path, &renderer)) {
+    book.coverBmpPath = SleepCoverAssets::cachedMinimalCoverPathFor(path);
+  }
+
+  const BookReadingStats bookStats = loadBookStatsForPath(path, isPdf ? pdfSleepProductCache.cacheRoot() : nullptr);
+  const GlobalReadingStats globalStats = GlobalReadingStats::load();
+  const float progressPercent = isPdf ? pdfCachedProgress : RecentBookProgress::loadPercent(book);
+#else
   RecentBook book = recentBookForPath(path);
   book.coverBmpPath = SleepCoverAssets::cachedMinimalCoverPathFor(path);
   if (book.coverBmpPath.empty() && SleepCoverAssets::prepareMinimalCoverForPath(path, &renderer)) {
     book.coverBmpPath = SleepCoverAssets::cachedMinimalCoverPathFor(path);
   }
-
   const BookReadingStats bookStats = loadBookStatsForPath(path);
   const GlobalReadingStats globalStats = GlobalReadingStats::load();
   const float progressPercent = RecentBookProgress::loadPercent(book);
+#endif
   MinimalTheme theme;
   theme.drawStatsSleepScreen(renderer, book, &bookStats, &globalStats, progressPercent,
                              sleepCoverFilterInvertsGeneratedScreen());
@@ -859,11 +979,29 @@ void SleepActivity::renderMinimalStatsSleepScreen() const {
 }
 
 void SleepActivity::renderDashboardSleepScreen() const {
-  const std::string& path = currentBookPath.empty() ? APP_STATE.openEpubPath : currentBookPath;
+  const std::string& path = currentBookPath.empty() ? APP_STATE.openBookPath() : currentBookPath;
   if (path.empty()) {
     return renderDefaultSleepScreen();
   }
 
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  const bool isPdf = pdfBookHydrated && FsHelpers::hasPdfExtension(path);
+  RecentBook book = isPdf ? pdfCachedBook : recentBookForPath(path);
+  const std::string fallbackCoverPath = book.coverBmpPath;
+  book.coverBmpPath =
+      isPdf ? pdfSleepProductCache.thumbnailPath() : SleepCoverAssets::cachedDashboardCoverPathFor(path);
+  if (!isPdf && book.coverBmpPath.empty() && SleepCoverAssets::prepareDashboardCoverForPath(path, &renderer)) {
+    book.coverBmpPath = SleepCoverAssets::cachedDashboardCoverPathFor(path);
+  }
+  if (!isPdf && book.coverBmpPath.empty()) {
+    book.coverBmpPath = fallbackCoverPath;
+  }
+
+  const BookReadingStats bookStats = loadBookStatsForPath(path, isPdf ? pdfSleepProductCache.cacheRoot() : nullptr);
+  const GlobalReadingStats globalStats = GlobalReadingStats::load();
+  const float progressPercent = isPdf ? pdfCachedProgress : RecentBookProgress::loadPercent(book);
+  const std::string chapterTitle = isPdf ? pdfCachedChapter : loadChapterTitleForPath(path);
+#else
   RecentBook book = recentBookForPath(path);
   const std::string fallbackCoverPath = book.coverBmpPath;
   book.coverBmpPath = SleepCoverAssets::cachedDashboardCoverPathFor(path);
@@ -873,11 +1011,11 @@ void SleepActivity::renderDashboardSleepScreen() const {
   if (book.coverBmpPath.empty()) {
     book.coverBmpPath = fallbackCoverPath;
   }
-
   const BookReadingStats bookStats = loadBookStatsForPath(path);
   const GlobalReadingStats globalStats = GlobalReadingStats::load();
   const float progressPercent = RecentBookProgress::loadPercent(book);
   const std::string chapterTitle = loadChapterTitleForPath(path);
+#endif
   DashboardTheme theme;
   theme.drawSleepScreen(renderer, book, &bookStats, &globalStats, progressPercent, chapterTitle.c_str(),
                         sleepCoverFilterInvertsGeneratedScreen());
@@ -913,7 +1051,7 @@ void SleepActivity::renderOverlaySleepScreen() const {
   const auto pageHeight = renderer.getScreenHeight();
   const bool shouldUseReaderPageBackground = canSnapshotOverlayBackground;
   const std::string path = shouldUseReaderPageBackground
-                               ? (currentBookPath.empty() ? APP_STATE.openEpubPath : currentBookPath)
+                               ? (currentBookPath.empty() ? APP_STATE.openBookPath() : currentBookPath)
                                : std::string{};
 
   auto renderSavedReaderPage = [&]() -> bool {

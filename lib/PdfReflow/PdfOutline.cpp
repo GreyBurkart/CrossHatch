@@ -1,0 +1,1672 @@
+#include "PdfOutline.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+
+#include "PdfCacheFormat.h"
+#include "PdfEncoding.h"
+#include "PdfIo.h"
+#include "PdfSemanticWriter.h"
+#include "PdfUnicode.h"
+
+namespace {
+
+constexpr uint8_t kMagic[] = {'X', 'P', 'O', 'L'};
+constexpr size_t kHeaderBytes = 16;
+constexpr size_t kCrcBytes = 4;
+
+PdfStatus copyBoundedUtf8(const uint8_t* const source, const size_t length, char* const output, const size_t capacity,
+                          uint8_t* const outputLength, bool* const truncated = nullptr) {
+  if ((source == nullptr && length != 0) || output == nullptr || outputLength == nullptr || capacity < 2) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  if (truncated != nullptr) {
+    *truncated = false;
+  }
+  size_t offset = 0;
+  size_t accepted = 0;
+  while (offset < length) {
+    uint32_t scalar = 0;
+    const PdfStatus status = pdfDecodeUtf8Scalar(source, length, &offset, &scalar);
+    if (!status) {
+      return status;
+    }
+    (void)scalar;
+    if (offset < capacity) {
+      accepted = offset;
+    }
+  }
+  if (accepted == 0) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  std::memcpy(output, source, accepted);
+  output[accepted] = '\0';
+  *outputLength = static_cast<uint8_t>(accepted);
+  if (truncated != nullptr) {
+    *truncated = accepted != length;
+  }
+  return PdfStatus::success();
+}
+
+void putU16(uint8_t* output, const uint16_t value) {
+  output[0] = static_cast<uint8_t>(value);
+  output[1] = static_cast<uint8_t>(value >> 8U);
+}
+
+void putU32(uint8_t* output, const uint32_t value) {
+  output[0] = static_cast<uint8_t>(value);
+  output[1] = static_cast<uint8_t>(value >> 8U);
+  output[2] = static_cast<uint8_t>(value >> 16U);
+  output[3] = static_cast<uint8_t>(value >> 24U);
+}
+
+uint16_t getU16(const uint8_t* input) {
+  return static_cast<uint16_t>(input[0]) | static_cast<uint16_t>(static_cast<uint16_t>(input[1]) << 8U);
+}
+
+uint32_t getU32(const uint8_t* input) {
+  return static_cast<uint32_t>(input[0]) | (static_cast<uint32_t>(input[1]) << 8U) |
+         (static_cast<uint32_t>(input[2]) << 16U) | (static_cast<uint32_t>(input[3]) << 24U);
+}
+
+struct BoundedTextSink {
+  char* output = nullptr;
+  size_t capacity = 0;
+  size_t length = 0;
+  bool full = false;
+};
+
+PdfStatus writeBoundedText(void* const context, const uint8_t* const source, const size_t requested,
+                           size_t* const bytesWritten) {
+  if (context == nullptr || (source == nullptr && requested != 0) || bytesWritten == nullptr) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  auto& sink = *static_cast<BoundedTextSink*>(context);
+  if (!sink.full && requested < sink.capacity - sink.length) {
+    std::memcpy(sink.output + sink.length, source, requested);
+    sink.length += requested;
+  } else {
+    sink.full = true;
+  }
+  *bytesWritten = requested;
+  return PdfStatus::success();
+}
+
+PdfStatus decodeArenaText(const PdfObjectArena& arena, const PdfValue& value, char* const output, const size_t capacity,
+                          uint8_t* const outputLength, bool* const truncated = nullptr) {
+  if ((value.kind != PdfValueKind::Name && value.kind != PdfValueKind::String) || output == nullptr ||
+      outputLength == nullptr || capacity < 2 || value.textOffset > arena.textLength ||
+      value.textLength > arena.textLength - value.textOffset) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  BoundedTextSink sink{output, capacity, 0, false};
+  const PdfStatus status =
+      pdfDecodePdfTextString(arena.text + value.textOffset, value.textLength, {&sink, writeBoundedText});
+  if (!status) {
+    return status;
+  }
+  if (sink.length == 0) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  output[sink.length] = '\0';
+  *outputLength = static_cast<uint8_t>(sink.length);
+  if (truncated != nullptr) {
+    *truncated = sink.full;
+  }
+  return PdfStatus::success();
+}
+
+bool validEntry(const PdfOutlineEntry& entry, const uint16_t index, const uint8_t parentLevel) {
+  if (entry.titleLength == 0 || entry.titleLength >= PdfOutlineLimits::TitleBytes ||
+      entry.title[entry.titleLength] != '\0' || entry.level == 0 || entry.level > PdfOutlineLimits::MaxDepth ||
+      entry.reserved != 0 || entry.parentIndex >= static_cast<int16_t>(index) || entry.parentIndex < -1) {
+    return false;
+  }
+  if (entry.parentIndex == -1) {
+    return entry.level == 1;
+  }
+  return parentLevel != 0 && parentLevel + 1 == entry.level;
+}
+
+PdfStatus validateUtf8Title(const PdfOutlineEntry& entry) {
+  size_t offset = 0;
+  while (offset < entry.titleLength) {
+    uint32_t scalar = 0;
+    const PdfStatus status =
+        pdfDecodeUtf8Scalar(reinterpret_cast<const uint8_t*>(entry.title), entry.titleLength, &offset, &scalar);
+    if (!status) {
+      return status;
+    }
+  }
+  return PdfStatus::success();
+}
+
+void encodeEntry(const PdfOutlineEntry& entry, uint8_t output[PdfOutlineLimits::EncodedRecordBytes]) {
+  std::memset(output, 0, PdfOutlineLimits::EncodedRecordBytes);
+  putU32(output, entry.sourceReference.objectNumber);
+  putU16(output + 4, entry.sourceReference.generation);
+  putU16(output + 6, static_cast<uint16_t>(entry.parentIndex));
+  putU16(output + 8, entry.sectionIndex);
+  output[10] = entry.level;
+  output[11] = entry.titleLength;
+  putU32(output + 12, entry.anchorOrdinal);
+  putU32(output + 16, entry.sourcePageIndex);
+  putU16(output + 20, entry.reserved);
+  putU16(output + 22, 0);
+  std::memcpy(output + 24, entry.title, entry.titleLength);
+}
+
+PdfOutlineEntry decodeEntry(const uint8_t input[PdfOutlineLimits::EncodedRecordBytes]) {
+  PdfOutlineEntry entry{};
+  entry.sourceReference.objectNumber = getU32(input);
+  entry.sourceReference.generation = getU16(input + 4);
+  entry.parentIndex = static_cast<int16_t>(getU16(input + 6));
+  entry.sectionIndex = getU16(input + 8);
+  entry.level = input[10];
+  entry.titleLength = input[11];
+  entry.anchorOrdinal = getU32(input + 12);
+  entry.sourcePageIndex = getU32(input + 16);
+  entry.reserved = getU16(input + 20);
+  if (entry.titleLength < PdfOutlineLimits::TitleBytes) {
+    std::memcpy(entry.title, input + 24, entry.titleLength);
+    entry.title[entry.titleLength] = '\0';
+  }
+  (void)pdfFormatSemanticAnchor(entry.anchorOrdinal, entry.anchor);
+  return entry;
+}
+
+PdfStatus appendNumber(char* output, const size_t capacity, size_t* length, const char* value) {
+  const size_t count = std::strlen(value);
+  if (*length > capacity || count >= capacity - *length) {
+    return PdfStatus::failure(PdfError::LimitExceeded);
+  }
+  std::memcpy(output + *length, value, count);
+  *length += count;
+  output[*length] = '\0';
+  return PdfStatus::success();
+}
+
+PdfStatus formatRoman(uint32_t value, const bool uppercase, char* output, const size_t capacity, size_t* length) {
+  if (value == 0 || value > 3999) {
+    return PdfStatus::failure(PdfError::LimitExceeded, value);
+  }
+  struct Roman {
+    uint16_t value;
+    const char* digits;
+  };
+  static constexpr Roman numerals[] = {
+      {1000, "M"}, {900, "CM"}, {500, "D"}, {400, "CD"}, {100, "C"}, {90, "XC"}, {50, "L"},
+      {40, "XL"},  {10, "X"},   {9, "IX"},  {5, "V"},    {4, "IV"},  {1, "I"},
+  };
+  for (const Roman& numeral : numerals) {
+    while (value >= numeral.value) {
+      const size_t begin = *length;
+      const PdfStatus status = appendNumber(output, capacity, length, numeral.digits);
+      if (!status) {
+        return status;
+      }
+      if (!uppercase) {
+        for (size_t index = begin; index < *length; ++index) {
+          output[index] = static_cast<char>(output[index] - 'A' + 'a');
+        }
+      }
+      value -= numeral.value;
+    }
+  }
+  return PdfStatus::success();
+}
+
+PdfStatus formatAlpha(uint32_t value, const bool uppercase, char* output, const size_t capacity, size_t* length) {
+  if (value == 0) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  char reversed[16]{};
+  size_t count = 0;
+  while (value != 0 && count < sizeof(reversed)) {
+    --value;
+    reversed[count++] = static_cast<char>((uppercase ? 'A' : 'a') + (value % 26U));
+    value /= 26U;
+  }
+  if (value != 0 || count >= capacity - *length) {
+    return PdfStatus::failure(PdfError::LimitExceeded);
+  }
+  while (count != 0) {
+    output[(*length)++] = reversed[--count];
+  }
+  output[*length] = '\0';
+  return PdfStatus::success();
+}
+
+const PdfValue* valueAt(const PdfObjectArena& arena, const uint16_t index) {
+  return index < arena.valueCount ? &arena.values[index] : nullptr;
+}
+
+PdfStatus copyArenaText(const PdfObjectArena& arena, const PdfValue& value, char* const output, const size_t capacity,
+                        uint8_t* const outputLength, bool* const truncated = nullptr) {
+  return decodeArenaText(arena, value, output, capacity, outputLength, truncated);
+}
+
+bool referenceForKey(const PdfObjectArena& arena, const uint16_t dictionaryIndex, const char* const key,
+                     PdfObjectReference* const reference) {
+  uint16_t valueIndex = PDF_INVALID_INDEX;
+  if (reference == nullptr || !pdfDictionaryFind(arena, dictionaryIndex, key, &valueIndex)) {
+    return false;
+  }
+  const PdfValue* const value = valueAt(arena, valueIndex);
+  if (value == nullptr || value->kind != PdfValueKind::Reference) {
+    return false;
+  }
+  *reference = {value->objectNumber, value->generation};
+  return true;
+}
+
+PdfStatus parseRawDestination(const PdfObjectArena& arena, const uint16_t valueIndex, PdfRawDestination* destination,
+                              const uint8_t depth = 0) {
+  if (destination == nullptr || depth > 2) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  const PdfValue* const value = valueAt(arena, valueIndex);
+  if (value == nullptr) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  *destination = {};
+  if (value->kind == PdfValueKind::Name || value->kind == PdfValueKind::String) {
+    destination->kind = PdfRawDestinationKind::Named;
+    bool truncated = false;
+    PdfStatus status = copyArenaText(arena, *value, destination->name, sizeof(destination->name),
+                                     &destination->nameLength, &truncated);
+    if (status && truncated) {
+      status = PdfStatus::failure(PdfError::Unsupported);
+    }
+    if (!status) {
+      *destination = {};
+    }
+    return status;
+  }
+  if (value->kind == PdfValueKind::Array) {
+    uint16_t firstIndex = PDF_INVALID_INDEX;
+    if (value->count == 0 || !pdfArrayAt(arena, valueIndex, 0, &firstIndex)) {
+      return PdfStatus::failure(PdfError::Malformed);
+    }
+    const PdfValue* const first = valueAt(arena, firstIndex);
+    if (first == nullptr || first->kind != PdfValueKind::Reference) {
+      return PdfStatus::failure(PdfError::Unsupported);
+    }
+    destination->kind = PdfRawDestinationKind::Explicit;
+    destination->pageReference = {first->objectNumber, first->generation};
+    return PdfStatus::success();
+  }
+  if (value->kind == PdfValueKind::Dictionary) {
+    uint16_t destinationIndex = PDF_INVALID_INDEX;
+    if (!pdfDictionaryFind(arena, valueIndex, "D", &destinationIndex)) {
+      return PdfStatus::failure(PdfError::Malformed);
+    }
+    return parseRawDestination(arena, destinationIndex, destination, static_cast<uint8_t>(depth + 1));
+  }
+  return PdfStatus::failure(PdfError::Unsupported);
+}
+
+PdfActionKind actionKind(const PdfObjectArena& arena, const PdfValue& value) {
+  if (value.kind != PdfValueKind::Name) {
+    return PdfActionKind::RemoteGoTo;
+  }
+  if (pdfTextEquals(arena, value, "GoTo")) {
+    return PdfActionKind::GoTo;
+  }
+  if (pdfTextEquals(arena, value, "URI")) {
+    return PdfActionKind::Uri;
+  }
+  if (pdfTextEquals(arena, value, "Launch")) {
+    return PdfActionKind::Launch;
+  }
+  if (pdfTextEquals(arena, value, "JavaScript")) {
+    return PdfActionKind::JavaScript;
+  }
+  if (pdfTextEquals(arena, value, "GoToR")) {
+    return PdfActionKind::RemoteGoTo;
+  }
+  return PdfActionKind::Attachment;
+}
+
+PdfStatus parseActionDictionary(const PdfObjectArena& arena, const uint16_t dictionaryIndex, PdfActionKind* action,
+                                PdfRawDestination* destination) {
+  if (action == nullptr || destination == nullptr) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  uint16_t actionIndex = PDF_INVALID_INDEX;
+  if (!pdfDictionaryFind(arena, dictionaryIndex, "S", &actionIndex)) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  const PdfValue* const actionValue = valueAt(arena, actionIndex);
+  if (actionValue == nullptr) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  *action = actionKind(arena, *actionValue);
+  *destination = {};
+  if (*action != PdfActionKind::GoTo) {
+    return PdfStatus::success();
+  }
+  uint16_t destinationIndex = PDF_INVALID_INDEX;
+  if (!pdfDictionaryFind(arena, dictionaryIndex, "D", &destinationIndex)) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  return parseRawDestination(arena, destinationIndex, destination);
+}
+
+PdfStatus readActionOrDestination(const PdfObjectArena& arena, const uint16_t dictionaryIndex, PdfActionKind* action,
+                                  PdfRawDestination* destination) {
+  uint16_t valueIndex = PDF_INVALID_INDEX;
+  if (pdfDictionaryFind(arena, dictionaryIndex, "Dest", &valueIndex)) {
+    *action = PdfActionKind::GoTo;
+    return parseRawDestination(arena, valueIndex, destination);
+  }
+  if (!pdfDictionaryFind(arena, dictionaryIndex, "A", &valueIndex)) {
+    *action = PdfActionKind::GoTo;
+    *destination = {};
+    return PdfStatus::success();
+  }
+  const PdfValue* const actionValue = valueAt(arena, valueIndex);
+  if (actionValue == nullptr || actionValue->kind != PdfValueKind::Dictionary) {
+    return PdfStatus::failure(PdfError::Unsupported);
+  }
+  return parseActionDictionary(arena, valueIndex, action, destination);
+}
+
+PdfStatus fixedCoordinate(const PdfValue& value, int32_t* const coordinate) {
+  if (coordinate == nullptr) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  if (value.kind == PdfValueKind::Real) {
+    *coordinate = value.fixedValue;
+    return PdfStatus::success();
+  }
+  if (value.kind != PdfValueKind::Integer || value.integerValue < (std::numeric_limits<int32_t>::min() >> 16) ||
+      value.integerValue > (std::numeric_limits<int32_t>::max() >> 16)) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  *coordinate = static_cast<int32_t>(static_cast<int64_t>(value.integerValue) * 65536LL);
+  return PdfStatus::success();
+}
+
+const uint8_t* findBytes(const uint8_t* const source, const size_t length, const char* const needle,
+                         const uint8_t* const start = nullptr) {
+  const size_t needleLength = std::strlen(needle);
+  if (source == nullptr || needleLength == 0 || needleLength > length) {
+    return nullptr;
+  }
+  const uint8_t* cursor = start == nullptr ? source : start;
+  if (cursor < source || cursor > source + length) {
+    return nullptr;
+  }
+  const uint8_t* const end = source + length;
+  while (static_cast<size_t>(end - cursor) >= needleLength) {
+    if (std::memcmp(cursor, needle, needleLength) == 0) {
+      return cursor;
+    }
+    ++cursor;
+  }
+  return nullptr;
+}
+
+PdfStatus xmpElementText(const uint8_t* const source, const size_t length, const char* const container,
+                         const char* const item, const uint8_t** const text, size_t* const textLength) {
+  const uint8_t* const containerStart = findBytes(source, length, container);
+  if (containerStart == nullptr) {
+    *text = nullptr;
+    *textLength = 0;
+    return PdfStatus::success();
+  }
+  const uint8_t* const itemStart = findBytes(source, length, item, containerStart);
+  if (itemStart == nullptr) {
+    *text = nullptr;
+    *textLength = 0;
+    return PdfStatus::success();
+  }
+  const uint8_t* const sourceEnd = source + length;
+  const uint8_t* valueStart = itemStart;
+  while (valueStart < sourceEnd && *valueStart != '>') {
+    ++valueStart;
+  }
+  if (valueStart == sourceEnd) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  ++valueStart;
+  char closing[48]{};
+  const int closingLength = std::snprintf(closing, sizeof(closing), "</%s", item + 1);
+  if (closingLength <= 0 || static_cast<size_t>(closingLength) >= sizeof(closing)) {
+    return PdfStatus::failure(PdfError::LimitExceeded);
+  }
+  const uint8_t* const valueEnd = findBytes(source, length, closing, valueStart);
+  if (valueEnd == nullptr || valueEnd < valueStart) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  *text = valueStart;
+  *textLength = static_cast<size_t>(valueEnd - valueStart);
+  return PdfStatus::success();
+}
+
+}  // namespace
+
+PdfStatus pdfReadCatalogNavigation(const PdfObjectArena& arena, const uint16_t rootIndex,
+                                   PdfCatalogNavigation* const catalog) {
+  const PdfValue* const root = valueAt(arena, rootIndex);
+  if (catalog == nullptr || root == nullptr || root->kind != PdfValueKind::Dictionary) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  *catalog = {};
+  catalog->hasPages = referenceForKey(arena, rootIndex, "Pages", &catalog->pages);
+  if (!catalog->hasPages) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  catalog->hasOutlines = referenceForKey(arena, rootIndex, "Outlines", &catalog->outlines);
+  catalog->hasPageLabels = referenceForKey(arena, rootIndex, "PageLabels", &catalog->pageLabels);
+  catalog->hasMetadata = referenceForKey(arena, rootIndex, "Metadata", &catalog->metadata);
+
+  uint16_t namesIndex = PDF_INVALID_INDEX;
+  if (pdfDictionaryFind(arena, rootIndex, "Names", &namesIndex)) {
+    const PdfValue* const names = valueAt(arena, namesIndex);
+    if (names != nullptr && names->kind == PdfValueKind::Dictionary) {
+      catalog->hasNamedDestinations = referenceForKey(arena, namesIndex, "Dests", &catalog->namedDestinations);
+    } else if (names != nullptr && names->kind == PdfValueKind::Reference) {
+      catalog->namedDestinations = {names->objectNumber, names->generation};
+      catalog->hasNamedDestinations = true;
+      catalog->namedDestinationsContainer = true;
+    }
+  }
+  if (!catalog->hasNamedDestinations) {
+    catalog->hasNamedDestinations = referenceForKey(arena, rootIndex, "Dests", &catalog->namedDestinations);
+  }
+
+  uint16_t languageIndex = PDF_INVALID_INDEX;
+  if (pdfDictionaryFind(arena, rootIndex, "Lang", &languageIndex)) {
+    const PdfValue* const language = valueAt(arena, languageIndex);
+    if (language == nullptr) {
+      return PdfStatus::failure(PdfError::Malformed);
+    }
+    const PdfStatus status =
+        copyArenaText(arena, *language, catalog->language, sizeof(catalog->language), &catalog->languageLength);
+    if (!status) {
+      return status;
+    }
+  }
+  return PdfStatus::success();
+}
+
+PdfStatus pdfReadNamedDestinationsReference(const PdfObjectArena& arena, const uint16_t rootIndex,
+                                            PdfObjectReference* const destinations) {
+  const PdfValue* const root = valueAt(arena, rootIndex);
+  if (destinations == nullptr || root == nullptr || root->kind != PdfValueKind::Dictionary) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  return referenceForKey(arena, rootIndex, "Dests", destinations) ? PdfStatus::success()
+                                                                  : PdfStatus::failure(PdfError::InvalidOffset);
+}
+
+PdfStatus pdfReadOutlineRoot(const PdfObjectArena& arena, const uint16_t rootIndex, PdfObjectReference* const first) {
+  const PdfValue* const root = valueAt(arena, rootIndex);
+  if (first == nullptr || root == nullptr || root->kind != PdfValueKind::Dictionary ||
+      !referenceForKey(arena, rootIndex, "First", first)) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  return PdfStatus::success();
+}
+
+PdfStatus pdfReadOutlineNode(const PdfObjectArena& arena, const uint16_t rootIndex, PdfRawOutlineNode* const node) {
+  const PdfValue* const root = valueAt(arena, rootIndex);
+  if (node == nullptr || root == nullptr || root->kind != PdfValueKind::Dictionary) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  *node = {};
+  uint16_t titleIndex = PDF_INVALID_INDEX;
+  if (!pdfDictionaryFind(arena, rootIndex, "Title", &titleIndex)) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  const PdfValue* const title = valueAt(arena, titleIndex);
+  if (title == nullptr) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  PdfStatus status = copyArenaText(arena, *title, node->title, sizeof(node->title), &node->titleLength);
+  if (!status) {
+    return status;
+  }
+  node->hasFirstChild = referenceForKey(arena, rootIndex, "First", &node->firstChild);
+  node->hasNext = referenceForKey(arena, rootIndex, "Next", &node->next);
+  PdfActionKind ignoredAction = PdfActionKind::GoTo;
+  status = readActionOrDestination(arena, rootIndex, &ignoredAction, &node->destination);
+  if (!status && status.error != PdfError::InvalidArgument) {
+    node->destination = {};
+    return PdfStatus::success();
+  }
+  return status;
+}
+
+PdfStatus pdfReadKeyTreeNode(const PdfObjectArena& arena, const uint16_t rootIndex, PdfKeyTreeNode* const node) {
+  const PdfValue* const root = valueAt(arena, rootIndex);
+  if (node == nullptr || root == nullptr || root->kind != PdfValueKind::Dictionary) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  *node = {};
+  uint16_t kidsIndex = PDF_INVALID_INDEX;
+  if (!pdfDictionaryFind(arena, rootIndex, "Kids", &kidsIndex)) {
+    return PdfStatus::success();
+  }
+  const PdfValue* const kids = valueAt(arena, kidsIndex);
+  if (kids == nullptr || kids->kind != PdfValueKind::Array) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  node->kidsArrayIndex = kidsIndex;
+  node->kidCount = kids->count;
+  return PdfStatus::success();
+}
+
+PdfStatus pdfReadKeyTreeKid(const PdfObjectArena& arena, const PdfKeyTreeNode& node, const uint16_t ordinal,
+                            PdfObjectReference* const child) {
+  if (child == nullptr || node.kidsArrayIndex == PDF_INVALID_INDEX || ordinal >= node.kidCount) {
+    return PdfStatus::failure(PdfError::InvalidArgument, ordinal);
+  }
+  uint16_t childIndex = PDF_INVALID_INDEX;
+  if (!pdfArrayAt(arena, node.kidsArrayIndex, ordinal, &childIndex)) {
+    return PdfStatus::failure(PdfError::Malformed, ordinal);
+  }
+  const PdfValue* const value = valueAt(arena, childIndex);
+  if (value == nullptr || value->kind != PdfValueKind::Reference || value->objectNumber == 0) {
+    return PdfStatus::failure(PdfError::Malformed, ordinal);
+  }
+  *child = {value->objectNumber, value->generation};
+  return PdfStatus::success();
+}
+
+PdfStatus pdfReadNameTreeNode(const PdfObjectArena& arena, const uint16_t rootIndex, PdfNameTreeNode* const node) {
+  if (node == nullptr) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  PdfKeyTreeNode keyTree{};
+  PdfStatus status = pdfReadKeyTreeNode(arena, rootIndex, &keyTree);
+  if (!status) {
+    return status;
+  }
+  *node = {};
+  node->kidsArrayIndex = keyTree.kidsArrayIndex;
+  node->kidCount = keyTree.kidCount;
+
+  uint16_t namesIndex = PDF_INVALID_INDEX;
+  if (!pdfDictionaryFind(arena, rootIndex, "Names", &namesIndex)) {
+    return status;
+  }
+  const PdfValue* const names = valueAt(arena, namesIndex);
+  if (names == nullptr || names->kind != PdfValueKind::Array || names->count == 0 || (names->count & 1U) != 0U ||
+      node->kidCount != 0U) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  node->namesArrayIndex = namesIndex;
+  node->nameCount = static_cast<uint16_t>(names->count / 2U);
+  return PdfStatus::success();
+}
+
+PdfStatus pdfReadNameTreeKid(const PdfObjectArena& arena, const PdfNameTreeNode& node, const uint16_t ordinal,
+                             PdfObjectReference* const child) {
+  return pdfReadKeyTreeKid(arena, {node.kidsArrayIndex, node.kidCount}, ordinal, child);
+}
+
+namespace {
+
+int compareNameBytes(const uint8_t* const left, const size_t leftLength, const uint8_t* const right,
+                     const size_t rightLength) {
+  const size_t common = std::min(leftLength, rightLength);
+  const int compared = common == 0 ? 0 : std::memcmp(left, right, common);
+  if (compared != 0) {
+    return compared;
+  }
+  return leftLength < rightLength ? -1 : leftLength > rightLength ? 1 : 0;
+}
+
+PdfStatus decodeNameTreeKey(const PdfObjectArena& arena, const PdfValue& value,
+                            char output[PdfOutlineLimits::DestinationNameBytes], uint8_t* const outputLength) {
+  bool truncated = false;
+  PdfStatus status =
+      copyArenaText(arena, value, output, PdfOutlineLimits::DestinationNameBytes, outputLength, &truncated);
+  if (status && truncated) {
+    status = PdfStatus::failure(PdfError::Unsupported);
+  }
+  return status;
+}
+
+}  // namespace
+
+PdfStatus pdfCompareNameTreeLimits(const PdfObjectArena& arena, const uint16_t rootIndex, const uint8_t* const name,
+                                   const size_t nameLength, PdfNameTreeRelation* const relation) {
+  if (relation == nullptr || (name == nullptr && nameLength != 0U)) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  char firstText[PdfOutlineLimits::DestinationNameBytes]{};
+  char lastText[PdfOutlineLimits::DestinationNameBytes]{};
+  uint8_t firstLength = 0;
+  uint8_t lastLength = 0;
+  PdfStatus status = pdfReadNameTreeLimits(arena, rootIndex, firstText, sizeof(firstText), &firstLength, lastText,
+                                           sizeof(lastText), &lastLength);
+  if (!status) {
+    return status;
+  }
+  if (compareNameBytes(name, nameLength, reinterpret_cast<const uint8_t*>(firstText), firstLength) < 0) {
+    *relation = PdfNameTreeRelation::Before;
+  } else if (compareNameBytes(name, nameLength, reinterpret_cast<const uint8_t*>(lastText), lastLength) > 0) {
+    *relation = PdfNameTreeRelation::After;
+  } else {
+    *relation = PdfNameTreeRelation::Within;
+  }
+  return PdfStatus::success();
+}
+
+PdfStatus pdfReadNameTreeLimits(const PdfObjectArena& arena, const uint16_t rootIndex, char* const firstText,
+                                const size_t firstCapacity, uint8_t* const firstLength, char* const lastText,
+                                const size_t lastCapacity, uint8_t* const lastLength) {
+  const PdfValue* const root = valueAt(arena, rootIndex);
+  if (firstText == nullptr || firstCapacity == 0U || firstLength == nullptr || lastText == nullptr ||
+      lastCapacity == 0U || lastLength == nullptr || root == nullptr || root->kind != PdfValueKind::Dictionary) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  uint16_t limitsIndex = PDF_INVALID_INDEX;
+  if (!pdfDictionaryFind(arena, rootIndex, "Limits", &limitsIndex)) {
+    return PdfStatus::failure(PdfError::Unsupported);
+  }
+  const PdfValue* const limits = valueAt(arena, limitsIndex);
+  uint16_t firstIndex = PDF_INVALID_INDEX;
+  uint16_t lastIndex = PDF_INVALID_INDEX;
+  if (limits == nullptr || limits->kind != PdfValueKind::Array || limits->count != 2U ||
+      !pdfArrayAt(arena, limitsIndex, 0, &firstIndex) || !pdfArrayAt(arena, limitsIndex, 1, &lastIndex)) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  const PdfValue* const first = valueAt(arena, firstIndex);
+  const PdfValue* const last = valueAt(arena, lastIndex);
+  if (first == nullptr || last == nullptr) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  bool firstTruncated = false;
+  bool lastTruncated = false;
+  PdfStatus status = copyArenaText(arena, *first, firstText, firstCapacity, firstLength, &firstTruncated);
+  if (status) {
+    status = copyArenaText(arena, *last, lastText, lastCapacity, lastLength, &lastTruncated);
+  }
+  if (status && (firstTruncated || lastTruncated)) {
+    status = PdfStatus::failure(PdfError::Unsupported);
+  }
+  if (!status) {
+    return status;
+  }
+  if (compareNameBytes(reinterpret_cast<const uint8_t*>(firstText), *firstLength,
+                       reinterpret_cast<const uint8_t*>(lastText), *lastLength) > 0) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  return PdfStatus::success();
+}
+
+PdfStatus pdfResolveNameTreeLeaf(const PdfObjectArena& arena, const uint16_t rootIndex, const uint8_t* const name,
+                                 const size_t nameLength, PdfRawDestination* const destination,
+                                 PdfObjectReference* const indirectDestination) {
+  if (destination == nullptr || indirectDestination == nullptr || (name == nullptr && nameLength != 0U)) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  *destination = {};
+  *indirectDestination = {};
+  PdfNameTreeNode node{};
+  PdfStatus status = pdfReadNameTreeNode(arena, rootIndex, &node);
+  if (!status) {
+    return status;
+  }
+  if (node.namesArrayIndex == PDF_INVALID_INDEX || node.nameCount == 0U) {
+    return PdfStatus::failure(PdfError::InvalidOffset);
+  }
+  uint16_t low = 0;
+  uint16_t high = node.nameCount;
+  while (low < high) {
+    const uint16_t middle = static_cast<uint16_t>(low + (high - low) / 2U);
+    uint16_t keyIndex = PDF_INVALID_INDEX;
+    uint16_t destinationIndex = PDF_INVALID_INDEX;
+    const uint16_t keyOrdinal = static_cast<uint16_t>(middle * 2U);
+    if (!pdfArrayAt(arena, node.namesArrayIndex, keyOrdinal, &keyIndex) ||
+        !pdfArrayAt(arena, node.namesArrayIndex, static_cast<uint16_t>(keyOrdinal + 1U), &destinationIndex)) {
+      return PdfStatus::failure(PdfError::Malformed, middle);
+    }
+    const PdfValue* const key = valueAt(arena, keyIndex);
+    if (key == nullptr) {
+      return PdfStatus::failure(PdfError::Malformed, middle);
+    }
+    char keyText[PdfOutlineLimits::DestinationNameBytes]{};
+    uint8_t keyLength = 0;
+    status = decodeNameTreeKey(arena, *key, keyText, &keyLength);
+    if (!status) {
+      return status;
+    }
+    const int compared = compareNameBytes(name, nameLength, reinterpret_cast<const uint8_t*>(keyText), keyLength);
+    if (compared < 0) {
+      high = middle;
+    } else if (compared > 0) {
+      low = static_cast<uint16_t>(middle + 1U);
+    } else {
+      const PdfValue* const value = valueAt(arena, destinationIndex);
+      if (value == nullptr) {
+        return PdfStatus::failure(PdfError::Malformed, middle);
+      }
+      if (value->kind == PdfValueKind::Reference) {
+        *indirectDestination = {value->objectNumber, value->generation};
+        return indirectDestination->objectNumber != 0U ? PdfStatus::success()
+                                                       : PdfStatus::failure(PdfError::Malformed, middle);
+      }
+      return parseRawDestination(arena, destinationIndex, destination);
+    }
+  }
+  *destination = {};
+  return PdfStatus::failure(PdfError::InvalidOffset);
+}
+
+PdfStatus pdfReadRawDestination(const PdfObjectArena& arena, const uint16_t rootIndex,
+                                PdfRawDestination* const destination) {
+  return parseRawDestination(arena, rootIndex, destination);
+}
+
+PdfStatus pdfBeginKeyTreeWalk(const PdfObjectReference root, const PdfFixedRecordStore& frames,
+                              PdfKeyTreeWalkRuntime* const runtime) {
+  if (runtime == nullptr || root.objectNumber == 0 || !frames.valid() || frames.capacity == 0 ||
+      frames.recordSize != sizeof(PdfKeyTreeFrame)) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  *runtime = {};
+  runtime->root = root;
+  runtime->stage = PdfKeyTreeWalkStage::Root;
+  return PdfStatus::success();
+}
+
+PdfStepResult pdfStepKeyTreeWalk(const PdfKeyTreeSource& source, const PdfFixedRecordStore& frames,
+                                 PdfKeyTreeWalkRuntime* const runtime, PdfWorkBudget& budget) {
+  if (runtime == nullptr || !source.valid() || !frames.valid() || frames.capacity == 0 ||
+      frames.recordSize != sizeof(PdfKeyTreeFrame)) {
+    return PdfStepResult::failure(PdfStatus::failure(PdfError::InvalidArgument));
+  }
+  const auto fail = [runtime](const PdfStatus status) {
+    runtime->failure = status;
+    runtime->stage = PdfKeyTreeWalkStage::Failed;
+    return PdfStepResult::failure(status);
+  };
+  if (runtime->stage == PdfKeyTreeWalkStage::Complete) {
+    return PdfStepResult::completed();
+  }
+  if (runtime->stage == PdfKeyTreeWalkStage::Failed) {
+    return PdfStepResult::failure(runtime->failure);
+  }
+  if (runtime->stage == PdfKeyTreeWalkStage::Idle) {
+    return fail(PdfStatus::failure(PdfError::InvalidArgument));
+  }
+
+  while (budget.operationsRemaining != 0 && !budget.stopRequested()) {
+    if (runtime->stage == PdfKeyTreeWalkStage::Descend && runtime->depth == 0) {
+      runtime->stage = PdfKeyTreeWalkStage::Complete;
+      return PdfStepResult::completed();
+    }
+    if (budget.bytesRemaining < sizeof(PdfKeyTreeFrame) || !budget.consumeOperation()) {
+      return PdfStepResult::paused();
+    }
+    (void)budget.takeBytes(sizeof(PdfKeyTreeFrame));
+
+    if (runtime->stage == PdfKeyTreeWalkStage::Root) {
+      uint16_t kidCount = 0;
+      PdfStatus status = source.inspect(source.context, runtime->root, &kidCount);
+      if (!status) {
+        return fail(status);
+      }
+      if (kidCount == 0) {
+        runtime->stage = PdfKeyTreeWalkStage::Complete;
+        return PdfStepResult::completed();
+      }
+      const PdfKeyTreeFrame frame{runtime->root, 0, kidCount};
+      status = pdfWriteRecord(frames, 0, &frame);
+      if (!status) {
+        return fail(status.error == PdfError::LimitExceeded ? PdfStatus::failure(PdfError::Unsupported) : status);
+      }
+      runtime->depth = 1;
+      runtime->stage = PdfKeyTreeWalkStage::Descend;
+      continue;
+    }
+
+    if (runtime->stage == PdfKeyTreeWalkStage::Descend) {
+      PdfStatus status = pdfReadRecord(frames, runtime->depth - 1U, &runtime->activeFrame);
+      if (!status) {
+        return fail(status);
+      }
+      if (runtime->activeFrame.nextKid >= runtime->activeFrame.kidCount) {
+        --runtime->depth;
+        continue;
+      }
+      status = source.readKid(source.context, runtime->activeFrame.reference, runtime->activeFrame.nextKid,
+                              &runtime->pendingChild);
+      ++runtime->activeFrame.nextKid;
+      if (!status) {
+        return fail(status);
+      }
+      if (runtime->pendingChild.objectNumber == 0) {
+        return fail(PdfStatus::failure(PdfError::Malformed));
+      }
+      runtime->stage = PdfKeyTreeWalkStage::PersistParent;
+      continue;
+    }
+
+    if (runtime->stage == PdfKeyTreeWalkStage::PersistParent) {
+      const PdfStatus status = pdfWriteRecord(frames, runtime->depth - 1U, &runtime->activeFrame);
+      if (!status) {
+        return fail(status.error == PdfError::LimitExceeded ? PdfStatus::failure(PdfError::Unsupported) : status);
+      }
+      runtime->ancestorIndex = 0;
+      runtime->stage = PdfKeyTreeWalkStage::CheckCycle;
+      continue;
+    }
+
+    if (runtime->stage == PdfKeyTreeWalkStage::CheckCycle) {
+      PdfKeyTreeFrame ancestor{};
+      const PdfStatus status = pdfReadRecord(frames, runtime->ancestorIndex, &ancestor);
+      if (!status) {
+        return fail(status);
+      }
+      if (ancestor.reference == runtime->pendingChild) {
+        return fail(PdfStatus::failure(PdfError::Malformed, runtime->pendingChild.objectNumber));
+      }
+      ++runtime->ancestorIndex;
+      if (runtime->ancestorIndex >= runtime->depth) {
+        runtime->stage = PdfKeyTreeWalkStage::InspectChild;
+      }
+      continue;
+    }
+
+    if (runtime->stage != PdfKeyTreeWalkStage::InspectChild) {
+      return fail(PdfStatus::failure(PdfError::InvalidArgument));
+    }
+    uint16_t kidCount = 0;
+    PdfStatus status = source.inspect(source.context, runtime->pendingChild, &kidCount);
+    if (!status) {
+      return fail(status);
+    }
+    if (kidCount == 0) {
+      runtime->pendingChild = {};
+      runtime->stage = PdfKeyTreeWalkStage::Descend;
+      continue;
+    }
+    if (runtime->depth >= frames.capacity) {
+      return fail(PdfStatus::failure(PdfError::Unsupported, runtime->pendingChild.objectNumber));
+    }
+    const PdfKeyTreeFrame childFrame{runtime->pendingChild, 0, kidCount};
+    status = pdfWriteRecord(frames, runtime->depth, &childFrame);
+    if (!status) {
+      return fail(status.error == PdfError::LimitExceeded ? PdfStatus::failure(PdfError::Unsupported) : status);
+    }
+    ++runtime->depth;
+    runtime->pendingChild = {};
+    runtime->stage = PdfKeyTreeWalkStage::Descend;
+  }
+  return budget.cancelRequested() ? fail(PdfStatus::failure(PdfError::Cancelled)) : PdfStepResult::paused();
+}
+
+PdfStatus PdfNamedDestinationMap::begin() {
+  if (workspace_.records == nullptr || workspace_.capacity == 0) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  count_ = 0;
+  initialized_ = true;
+  return PdfStatus::success();
+}
+
+PdfStatus PdfNamedDestinationMap::add(const uint8_t* const name, const size_t nameLength,
+                                      const PdfRawDestination& destination) {
+  if (!initialized_ || count_ >= workspace_.capacity || destination.kind != PdfRawDestinationKind::Explicit) {
+    return count_ >= workspace_.capacity ? PdfStatus::failure(PdfError::Unsupported)
+                                         : PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  for (uint16_t index = 0; index < count_; ++index) {
+    if (workspace_.records[index].nameLength == nameLength &&
+        std::memcmp(workspace_.records[index].name, name, nameLength) == 0) {
+      return PdfStatus::failure(PdfError::Malformed);
+    }
+  }
+  PdfNamedDestinationRecord record{};
+  bool truncated = false;
+  PdfStatus status =
+      copyBoundedUtf8(name, nameLength, record.name, sizeof(record.name), &record.nameLength, &truncated);
+  if (status && truncated) {
+    status = PdfStatus::failure(PdfError::Unsupported);
+  }
+  if (status) {
+    record.destination = destination;
+    workspace_.records[count_++] = record;
+  }
+  return status;
+}
+
+PdfStatus PdfNamedDestinationMap::resolve(const uint8_t* const name, const size_t nameLength,
+                                          PdfRawDestination* const destination) const {
+  if (!initialized_ || (name == nullptr && nameLength != 0) || destination == nullptr) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  for (uint16_t index = 0; index < count_; ++index) {
+    if (workspace_.records[index].nameLength == nameLength &&
+        std::memcmp(workspace_.records[index].name, name, nameLength) == 0) {
+      *destination = workspace_.records[index].destination;
+      return PdfStatus::success();
+    }
+  }
+  *destination = {};
+  return PdfStatus::failure(PdfError::InvalidOffset);
+}
+
+PdfStatus pdfReadNamedDestinations(const PdfObjectArena& arena, const uint16_t rootIndex,
+                                   PdfNamedDestinationMap* const destinations) {
+  const PdfValue* const root = valueAt(arena, rootIndex);
+  if (destinations == nullptr || root == nullptr || root->kind != PdfValueKind::Dictionary) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  uint16_t namesIndex = PDF_INVALID_INDEX;
+  if (!pdfDictionaryFind(arena, rootIndex, "Names", &namesIndex)) {
+    PdfKeyTreeNode treeNode{};
+    const PdfStatus treeStatus = pdfReadKeyTreeNode(arena, rootIndex, &treeNode);
+    if (!treeStatus) {
+      return treeStatus;
+    }
+    if (treeNode.kidsArrayIndex != PDF_INVALID_INDEX) {
+      return PdfStatus::failure(PdfError::Unsupported);
+    }
+    const uint16_t initialCount = destinations->count();
+    uint16_t entryIndex = root->firstLink;
+    for (uint16_t ordinal = 0; ordinal < root->count; ++ordinal) {
+      if (entryIndex >= arena.dictionaryCount) {
+        return PdfStatus::failure(PdfError::Malformed, ordinal);
+      }
+      const PdfDictionaryEntry& entry = arena.dictionaryEntries[entryIndex];
+      if (entry.valueIndex >= arena.valueCount || entry.keyOffset > arena.textLength ||
+          entry.keyLength > arena.textLength - entry.keyOffset) {
+        return PdfStatus::failure(PdfError::Malformed, ordinal);
+      }
+      PdfRawDestination destination{};
+      PdfStatus status = parseRawDestination(arena, entry.valueIndex, &destination);
+      if (status) {
+        status = destinations->add(arena.text + entry.keyOffset, entry.keyLength, destination);
+      }
+      if (!status) {
+        if (status.error == PdfError::InvalidArgument || status.error == PdfError::Malformed) {
+          return status;
+        }
+        entryIndex = entry.next;
+        continue;
+      }
+      entryIndex = entry.next;
+    }
+    return destinations->count() == initialCount ? PdfStatus::failure(PdfError::Unsupported) : PdfStatus::success();
+  }
+  const PdfValue* const names = valueAt(arena, namesIndex);
+  if (names == nullptr || names->kind != PdfValueKind::Array || names->count == 0 || (names->count & 1U) != 0) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  const uint16_t initialCount = destinations->count();
+  for (uint16_t ordinal = 0; ordinal < names->count; ordinal += 2) {
+    uint16_t nameIndex = PDF_INVALID_INDEX;
+    uint16_t destinationIndex = PDF_INVALID_INDEX;
+    if (!pdfArrayAt(arena, namesIndex, ordinal, &nameIndex) ||
+        !pdfArrayAt(arena, namesIndex, static_cast<uint16_t>(ordinal + 1), &destinationIndex)) {
+      return PdfStatus::failure(PdfError::Malformed, ordinal);
+    }
+    const PdfValue* const name = valueAt(arena, nameIndex);
+    if (name == nullptr || name->textOffset > arena.textLength ||
+        name->textLength > arena.textLength - name->textOffset) {
+      return PdfStatus::failure(PdfError::Malformed, ordinal);
+    }
+    if (name->kind != PdfValueKind::Name && name->kind != PdfValueKind::String) {
+      continue;
+    }
+    PdfRawDestination destination{};
+    PdfStatus status = parseRawDestination(arena, destinationIndex, &destination);
+    if (status) {
+      status = destinations->add(arena.text + name->textOffset, name->textLength, destination);
+    }
+    if (!status) {
+      if (status.error == PdfError::InvalidArgument || status.error == PdfError::Malformed) {
+        return status;
+      }
+      continue;
+    }
+  }
+  return destinations->count() == initialCount ? PdfStatus::failure(PdfError::Unsupported) : PdfStatus::success();
+}
+
+PdfStatus pdfReadPageLabels(const PdfObjectArena& arena, const uint16_t rootIndex, PdfPageLabelMap* const labels) {
+  const PdfValue* const root = valueAt(arena, rootIndex);
+  if (labels == nullptr || root == nullptr || root->kind != PdfValueKind::Dictionary) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  uint16_t numbersIndex = PDF_INVALID_INDEX;
+  if (!pdfDictionaryFind(arena, rootIndex, "Nums", &numbersIndex)) {
+    return PdfStatus::failure(PdfError::Unsupported);
+  }
+  const PdfValue* const numbers = valueAt(arena, numbersIndex);
+  if (numbers == nullptr || numbers->kind != PdfValueKind::Array || numbers->count == 0 || (numbers->count & 1U) != 0) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  for (uint16_t ordinal = 0; ordinal < numbers->count; ordinal += 2) {
+    uint16_t pageIndex = PDF_INVALID_INDEX;
+    uint16_t labelIndex = PDF_INVALID_INDEX;
+    if (!pdfArrayAt(arena, numbersIndex, ordinal, &pageIndex) ||
+        !pdfArrayAt(arena, numbersIndex, static_cast<uint16_t>(ordinal + 1), &labelIndex)) {
+      return PdfStatus::failure(PdfError::Malformed, ordinal);
+    }
+    const PdfValue* const page = valueAt(arena, pageIndex);
+    const PdfValue* const label = valueAt(arena, labelIndex);
+    if (page == nullptr || page->kind != PdfValueKind::Integer || page->integerValue < 0 ||
+        page->integerValue > UINT32_MAX || label == nullptr || label->kind != PdfValueKind::Dictionary) {
+      return PdfStatus::failure(PdfError::Malformed, ordinal);
+    }
+    PdfPageLabelRange range{};
+    range.firstPageIndex = static_cast<uint32_t>(page->integerValue);
+    range.startNumber = 1;
+    range.style = PdfPageLabelStyle::None;
+    uint16_t valueIndex = PDF_INVALID_INDEX;
+    if (pdfDictionaryFind(arena, labelIndex, "S", &valueIndex)) {
+      const PdfValue* const style = valueAt(arena, valueIndex);
+      if (style == nullptr || style->kind != PdfValueKind::Name) {
+        return PdfStatus::failure(PdfError::Malformed, ordinal);
+      }
+      if (pdfTextEquals(arena, *style, "D")) {
+        range.style = PdfPageLabelStyle::Decimal;
+      } else if (pdfTextEquals(arena, *style, "R")) {
+        range.style = PdfPageLabelStyle::UpperRoman;
+      } else if (pdfTextEquals(arena, *style, "r")) {
+        range.style = PdfPageLabelStyle::LowerRoman;
+      } else if (pdfTextEquals(arena, *style, "A")) {
+        range.style = PdfPageLabelStyle::UpperAlpha;
+      } else if (pdfTextEquals(arena, *style, "a")) {
+        range.style = PdfPageLabelStyle::LowerAlpha;
+      } else {
+        return PdfStatus::failure(PdfError::Unsupported);
+      }
+    }
+    if (pdfDictionaryFind(arena, labelIndex, "St", &valueIndex)) {
+      const PdfValue* const start = valueAt(arena, valueIndex);
+      if (start == nullptr || start->kind != PdfValueKind::Integer || start->integerValue <= 0 ||
+          start->integerValue > UINT32_MAX) {
+        return PdfStatus::failure(PdfError::Malformed, ordinal);
+      }
+      range.startNumber = static_cast<uint32_t>(start->integerValue);
+    }
+    if (pdfDictionaryFind(arena, labelIndex, "P", &valueIndex)) {
+      const PdfValue* const prefix = valueAt(arena, valueIndex);
+      if (prefix == nullptr) {
+        return PdfStatus::failure(PdfError::Malformed, ordinal);
+      }
+      PdfStatus status = copyArenaText(arena, *prefix, range.prefix, sizeof(range.prefix), &range.prefixLength);
+      if (!status) {
+        return status;
+      }
+    }
+    const PdfStatus status = labels->add(range);
+    if (!status) {
+      return status;
+    }
+  }
+  return PdfStatus::success();
+}
+
+PdfStatus pdfReadLinkAnnotation(const PdfObjectArena& arena, const uint16_t rootIndex,
+                                PdfRawLinkAnnotation* const annotation) {
+  const PdfValue* const root = valueAt(arena, rootIndex);
+  if (annotation == nullptr || root == nullptr || root->kind != PdfValueKind::Dictionary) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  uint16_t subtypeIndex = PDF_INVALID_INDEX;
+  if (!pdfDictionaryFind(arena, rootIndex, "Subtype", &subtypeIndex)) {
+    return PdfStatus::failure(PdfError::Unsupported);
+  }
+  const PdfValue* const subtype = valueAt(arena, subtypeIndex);
+  if (subtype == nullptr || !pdfTextEquals(arena, *subtype, "Link")) {
+    return PdfStatus::failure(PdfError::Unsupported);
+  }
+  *annotation = {};
+  PdfStatus status = readActionOrDestination(arena, rootIndex, &annotation->action, &annotation->destination);
+  if (!status) {
+    return status.error == PdfError::InvalidArgument ? status : PdfStatus::failure(PdfError::Unsupported);
+  }
+  uint16_t rectangleIndex = PDF_INVALID_INDEX;
+  if (!pdfDictionaryFind(arena, rootIndex, "Rect", &rectangleIndex)) {
+    return PdfStatus::failure(PdfError::Unsupported);
+  }
+  const PdfValue* const rectangle = valueAt(arena, rectangleIndex);
+  if (rectangle == nullptr || rectangle->kind != PdfValueKind::Array || rectangle->count != 4) {
+    return PdfStatus::failure(PdfError::Unsupported);
+  }
+  int32_t* coordinates[] = {&annotation->rectangle.xMin, &annotation->rectangle.yMin, &annotation->rectangle.xMax,
+                            &annotation->rectangle.yMax};
+  for (uint16_t ordinal = 0; ordinal < 4; ++ordinal) {
+    uint16_t coordinateIndex = PDF_INVALID_INDEX;
+    if (!pdfArrayAt(arena, rectangleIndex, ordinal, &coordinateIndex)) {
+      return PdfStatus::failure(PdfError::Unsupported);
+    }
+    const PdfValue* const coordinate = valueAt(arena, coordinateIndex);
+    if (coordinate == nullptr) {
+      return PdfStatus::failure(PdfError::Unsupported);
+    }
+    status = fixedCoordinate(*coordinate, coordinates[ordinal]);
+    if (!status) {
+      return status.error == PdfError::InvalidArgument ? status : PdfStatus::failure(PdfError::Unsupported);
+    }
+  }
+  return PdfStatus::success();
+}
+
+PdfStatus pdfApplyCatalogMetadata(const PdfCatalogNavigation& catalog, PdfMetadataBuilder* const metadata) {
+  if (metadata == nullptr) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  return catalog.languageLength == 0
+             ? PdfStatus::success()
+             : metadata->setLanguage(PdfMetadataOrigin::Catalog, reinterpret_cast<const uint8_t*>(catalog.language),
+                                     catalog.languageLength);
+}
+
+PdfStatus pdfApplyInfoMetadata(const PdfObjectArena& arena, const uint16_t rootIndex,
+                               PdfMetadataBuilder* const metadata) {
+  const PdfValue* const root = valueAt(arena, rootIndex);
+  if (metadata == nullptr || root == nullptr || root->kind != PdfValueKind::Dictionary) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+  for (const char* const key : {"Title", "Author"}) {
+    uint16_t valueIndex = PDF_INVALID_INDEX;
+    if (!pdfDictionaryFind(arena, rootIndex, key, &valueIndex)) {
+      continue;
+    }
+    const PdfValue* const value = valueAt(arena, valueIndex);
+    if (value == nullptr || value->kind != PdfValueKind::String || value->textOffset > arena.textLength ||
+        value->textLength > arena.textLength - value->textOffset) {
+      return PdfStatus::failure(PdfError::Malformed);
+    }
+    char decoded[PdfMetadataLimits::TitleBytes]{};
+    uint8_t decodedLength = 0;
+    PdfStatus status = decodeArenaText(arena, *value, decoded, sizeof(decoded), &decodedLength);
+    if (status) {
+      status =
+          std::strcmp(key, "Title") == 0
+              ? metadata->setTitle(PdfMetadataOrigin::Info, reinterpret_cast<const uint8_t*>(decoded), decodedLength)
+              : metadata->setAuthor(PdfMetadataOrigin::Info, reinterpret_cast<const uint8_t*>(decoded), decodedLength);
+    }
+    if (!status) {
+      return status;
+    }
+  }
+  return PdfStatus::success();
+}
+
+PdfStatus pdfApplyXmpMetadata(const uint8_t* const source, const size_t length, PdfMetadataBuilder* const metadata) {
+  if ((source == nullptr && length != 0) || metadata == nullptr || length > 64U * 1024U) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  struct Element {
+    const char* container;
+    const char* item;
+    uint8_t field;
+  };
+  static constexpr Element elements[] = {
+      {"<dc:title", "<rdf:li", 0},
+      {"<dc:creator", "<rdf:li", 1},
+      {"<dc:language", "<rdf:li", 2},
+  };
+  for (const Element& element : elements) {
+    const uint8_t* text = nullptr;
+    size_t textLength = 0;
+    PdfStatus status = xmpElementText(source, length, element.container, element.item, &text, &textLength);
+    if (!status) {
+      return status;
+    }
+    if (textLength == 0) {
+      continue;
+    }
+    if (element.field == 0) {
+      status = metadata->setTitle(PdfMetadataOrigin::Xmp, text, textLength);
+    } else if (element.field == 1) {
+      status = metadata->setAuthor(PdfMetadataOrigin::Xmp, text, textLength);
+    } else {
+      status = metadata->setLanguage(PdfMetadataOrigin::Xmp, text, textLength);
+    }
+    if (!status) {
+      return status;
+    }
+  }
+  return PdfStatus::success();
+}
+
+PdfStatus PdfOutlineBuilder::begin() {
+  if (workspace_.entries == nullptr || workspace_.capacity == 0 || workspace_.capacity > PdfOutlineLimits::MaxEntries) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  count_ = 0;
+  initialized_ = true;
+  finished_ = false;
+  explicitOutline_ = false;
+  return PdfStatus::success();
+}
+
+bool PdfOutlineBuilder::hasReference(const PdfObjectReference reference) const {
+  for (uint16_t index = 0; index < count_; ++index) {
+    if (workspace_.entries[index].sourceReference == reference) {
+      return true;
+    }
+  }
+  return false;
+}
+
+PdfStatus PdfOutlineBuilder::appendEntry(const PdfObjectReference reference, const int16_t parentIndex,
+                                         const uint8_t* const title, const size_t titleLength,
+                                         const PdfResolvedDestination& destination, const uint8_t explicitLevel) {
+  if (!initialized_ || finished_ || count_ >= workspace_.capacity || !destination.resolved ||
+      parentIndex >= static_cast<int16_t>(count_) || parentIndex < -1) {
+    return count_ >= workspace_.capacity ? PdfStatus::failure(PdfError::Unsupported)
+                                         : PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  int16_t effectiveParent = parentIndex;
+  uint8_t level = explicitLevel != 0
+                      ? explicitLevel
+                      : static_cast<uint8_t>(effectiveParent < 0 ? 1 : workspace_.entries[effectiveParent].level + 1);
+  if (level > PdfOutlineLimits::MaxDepth) {
+    while (effectiveParent >= 0 && workspace_.entries[effectiveParent].level >= PdfOutlineLimits::MaxDepth) {
+      effectiveParent = workspace_.entries[effectiveParent].parentIndex;
+    }
+    level = static_cast<uint8_t>(effectiveParent < 0 ? 1 : workspace_.entries[effectiveParent].level + 1);
+  }
+  if (level == 0 || level > PdfOutlineLimits::MaxDepth || (effectiveParent < 0 && level != 1) ||
+      (effectiveParent >= 0 && level != static_cast<uint8_t>(workspace_.entries[effectiveParent].level + 1))) {
+    return PdfStatus::failure(PdfError::Unsupported, level);
+  }
+
+  PdfOutlineEntry entry{};
+  entry.sourceReference = reference;
+  entry.parentIndex = effectiveParent;
+  entry.sectionIndex = destination.sectionIndex;
+  entry.anchorOrdinal = destination.anchorOrdinal;
+  entry.sourcePageIndex = destination.sourcePageIndex;
+  entry.level = level;
+  PdfStatus status = copyBoundedUtf8(title, titleLength, entry.title, sizeof(entry.title), &entry.titleLength);
+  if (status) {
+    status = pdfFormatSemanticAnchor(entry.anchorOrdinal, entry.anchor);
+  }
+  if (!status) {
+    return status;
+  }
+  workspace_.entries[count_++] = entry;
+  return PdfStatus::success();
+}
+
+PdfStatus PdfOutlineBuilder::append(const PdfOutlineCandidate& candidate) {
+  if (initialized_ && hasReference(candidate.reference)) {
+    return PdfStatus::failure(PdfError::Malformed, candidate.reference.objectNumber);
+  }
+  const PdfStatus status = appendEntry(candidate.reference, candidate.parentIndex, candidate.title,
+                                       candidate.titleLength, candidate.destination);
+  if (status) {
+    explicitOutline_ = true;
+  }
+  return status;
+}
+
+PdfStatus PdfOutlineBuilder::appendHeading(const uint8_t* const title, const size_t titleLength,
+                                           const uint16_t sectionIndex, const uint32_t anchorOrdinal,
+                                           const uint8_t sourceHeadingLevel) {
+  if (explicitOutline_) {
+    return PdfStatus::success();
+  }
+  int16_t parentIndex = -1;
+  uint8_t level = 1;
+  if (count_ != 0) {
+    const uint8_t priorSourceLevel = static_cast<uint8_t>(workspace_.entries[count_ - 1].sourceReference.generation);
+    if (sourceHeadingLevel > priorSourceLevel && workspace_.entries[count_ - 1].level < PdfOutlineLimits::MaxDepth) {
+      parentIndex = static_cast<int16_t>(count_ - 1);
+      level = static_cast<uint8_t>(workspace_.entries[count_ - 1].level + 1);
+    } else {
+      for (int16_t index = static_cast<int16_t>(count_ - 1); index >= 0; --index) {
+        const uint8_t candidateLevel = static_cast<uint8_t>(workspace_.entries[index].sourceReference.generation);
+        if (candidateLevel < sourceHeadingLevel) {
+          parentIndex = index;
+          level = static_cast<uint8_t>(workspace_.entries[index].level + 1);
+          break;
+        }
+      }
+    }
+  }
+  const PdfObjectReference synthetic{0x80000000U + count_, sourceHeadingLevel};
+  return appendEntry(synthetic, parentIndex, title, titleLength, {sectionIndex, anchorOrdinal, 0, true}, level);
+}
+
+PdfStatus PdfOutlineBuilder::finish(const uint8_t* const fallbackTitle, const size_t fallbackTitleLength) {
+  if (!initialized_ || finished_) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  if (count_ == 0) {
+    const PdfStatus status = appendEntry({0, 0}, -1, fallbackTitle, fallbackTitleLength, {0, 0, 0, true}, 1);
+    if (!status) {
+      return status;
+    }
+  }
+  finished_ = true;
+  return PdfStatus::success();
+}
+
+PdfStatus pdfResolveInternalAction(const PdfActionKind action, const PdfResolvedDestination& destination,
+                                   char* const href, const size_t capacity, size_t* const length) {
+  if (href == nullptr || capacity == 0 || length == nullptr) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  href[0] = '\0';
+  *length = 0;
+  if (action != PdfActionKind::GoTo) {
+    return PdfStatus::failure(PdfError::Unsupported);
+  }
+  if (!destination.resolved) {
+    return PdfStatus::failure(PdfError::InvalidOffset);
+  }
+  char anchor[PdfOutlineLimits::AnchorBytes]{};
+  PdfStatus status = pdfFormatSemanticAnchor(destination.anchorOrdinal, anchor);
+  if (!status) {
+    return status;
+  }
+  const int written = std::snprintf(href, capacity, "sections/%06u.xhtml#%s", destination.sectionIndex, anchor);
+  if (written < 0 || static_cast<size_t>(written) >= capacity) {
+    href[0] = '\0';
+    return PdfStatus::failure(PdfError::Unsupported);
+  }
+  *length = static_cast<size_t>(written);
+  return PdfStatus::success();
+}
+
+PdfStatus PdfPageLabelMap::begin() {
+  if (workspace_.ranges == nullptr || workspace_.capacity == 0) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  count_ = 0;
+  initialized_ = true;
+  return PdfStatus::success();
+}
+
+PdfStatus PdfPageLabelMap::add(const PdfPageLabelRange& range) {
+  if (!initialized_ || count_ >= workspace_.capacity || range.startNumber == 0 ||
+      range.prefixLength >= PdfOutlineLimits::PageLabelPrefixBytes ||
+      (count_ != 0 && range.firstPageIndex <= workspace_.ranges[count_ - 1].firstPageIndex)) {
+    return count_ >= workspace_.capacity ? PdfStatus::failure(PdfError::Unsupported)
+                                         : PdfStatus::failure(PdfError::Malformed);
+  }
+  size_t offset = 0;
+  while (offset < range.prefixLength) {
+    uint32_t scalar = 0;
+    const PdfStatus status =
+        pdfDecodeUtf8Scalar(reinterpret_cast<const uint8_t*>(range.prefix), range.prefixLength, &offset, &scalar);
+    if (!status) {
+      return status;
+    }
+  }
+  workspace_.ranges[count_++] = range;
+  workspace_.ranges[count_ - 1].prefix[range.prefixLength] = '\0';
+  return PdfStatus::success();
+}
+
+PdfStatus PdfPageLabelMap::format(const uint32_t pageIndex, char* const output, const size_t capacity,
+                                  size_t* const length) const {
+  if (!initialized_ || output == nullptr || capacity == 0 || length == nullptr) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  output[0] = '\0';
+  *length = 0;
+
+  PdfPageLabelRange selected{};
+  selected.firstPageIndex = 0;
+  selected.startNumber = 1;
+  selected.style = PdfPageLabelStyle::Decimal;
+  for (uint8_t index = 0; index < count_ && workspace_.ranges[index].firstPageIndex <= pageIndex; ++index) {
+    selected = workspace_.ranges[index];
+  }
+  const uint32_t delta = pageIndex - selected.firstPageIndex;
+  if (selected.startNumber > std::numeric_limits<uint32_t>::max() - delta) {
+    return PdfStatus::failure(PdfError::LimitExceeded);
+  }
+  const uint32_t value = selected.startNumber + delta;
+  if (selected.prefixLength >= capacity) {
+    return PdfStatus::failure(PdfError::LimitExceeded);
+  }
+  std::memcpy(output, selected.prefix, selected.prefixLength);
+  *length = selected.prefixLength;
+  output[*length] = '\0';
+
+  if (selected.style == PdfPageLabelStyle::None) {
+    return PdfStatus::success();
+  }
+  if (selected.style == PdfPageLabelStyle::UpperRoman || selected.style == PdfPageLabelStyle::LowerRoman) {
+    return formatRoman(value, selected.style == PdfPageLabelStyle::UpperRoman, output, capacity, length);
+  }
+  if (selected.style == PdfPageLabelStyle::UpperAlpha || selected.style == PdfPageLabelStyle::LowerAlpha) {
+    return formatAlpha(value, selected.style == PdfPageLabelStyle::UpperAlpha, output, capacity, length);
+  }
+  char number[16]{};
+  const int written = std::snprintf(number, sizeof(number), "%lu", static_cast<unsigned long>(value));
+  return written < 0 || static_cast<size_t>(written) >= sizeof(number) ? PdfStatus::failure(PdfError::LimitExceeded)
+                                                                       : appendNumber(output, capacity, length, number);
+}
+
+PdfStepResult pdfStepEncodeOutline(const PdfOutlineEntrySource& entries, const PdfByteSink& destination,
+                                   PdfOutlineEncodeRuntime& runtime, PdfOutlineEncodeWorkspace& workspace,
+                                   PdfWorkBudget& budget) {
+  if (!entries.valid() || !destination.valid() || entries.count == 0 || entries.count > PdfOutlineLimits::MaxEntries) {
+    return PdfStepResult::failure(PdfStatus::failure(PdfError::InvalidArgument));
+  }
+  if (runtime.stage == PdfOutlineEncodeStage::Idle) {
+    runtime.crc32 = 0;
+    runtime.recordIndex = 0;
+    runtime.stage = PdfOutlineEncodeStage::Header;
+    return PdfStepResult::paused();
+  }
+
+  if (runtime.stage == PdfOutlineEncodeStage::Header) {
+    if (budget.bytesRemaining < kHeaderBytes || !budget.consumeOperation()) {
+      return PdfStepResult::paused();
+    }
+    (void)budget.takeBytes(kHeaderBytes);
+    std::memset(workspace.encoded, 0, kHeaderBytes);
+    std::memcpy(workspace.encoded, kMagic, sizeof(kMagic));
+    putU16(workspace.encoded + 4, PdfOutlineLimits::CodecVersion);
+    putU16(workspace.encoded + 6, PdfOutlineLimits::EncodedRecordBytes);
+    putU16(workspace.encoded + 8, entries.count);
+    putU16(workspace.encoded + 10, 0);
+    putU32(workspace.encoded + 12, static_cast<uint32_t>(entries.count) * PdfOutlineLimits::EncodedRecordBytes);
+    const uint32_t crc = pdfCacheCrc32(workspace.encoded, kHeaderBytes);
+    const PdfStatus status = pdfWriteExact(destination, workspace.encoded, kHeaderBytes);
+    if (!status) {
+      return PdfStepResult::failure(status);
+    }
+    runtime.crc32 = crc;
+    runtime.stage = PdfOutlineEncodeStage::Records;
+    return PdfStepResult::paused();
+  }
+
+  if (runtime.stage == PdfOutlineEncodeStage::Records) {
+    if (runtime.recordIndex >= entries.count) {
+      runtime.stage = PdfOutlineEncodeStage::Crc;
+      return PdfStepResult::paused();
+    }
+    if (budget.bytesRemaining < PdfOutlineLimits::EncodedRecordBytes || !budget.consumeOperation() ||
+        budget.takeBytes(PdfOutlineLimits::EncodedRecordBytes) != PdfOutlineLimits::EncodedRecordBytes) {
+      return PdfStepResult::paused();
+    }
+    workspace.entry = {};
+    PdfStatus status = entries.read(entries.context, runtime.recordIndex, &workspace.entry);
+    if (!status) {
+      return PdfStepResult::failure(status);
+    }
+    uint8_t parentLevel = 0;
+    if (workspace.entry.parentIndex >= 0) {
+      workspace.parent = {};
+      status = entries.read(entries.context, static_cast<uint16_t>(workspace.entry.parentIndex), &workspace.parent);
+      if (!status) {
+        return PdfStepResult::failure(status);
+      }
+      parentLevel = workspace.parent.level;
+    }
+    if (!validEntry(workspace.entry, runtime.recordIndex, parentLevel)) {
+      return PdfStepResult::failure(PdfStatus::failure(PdfError::Malformed, runtime.recordIndex));
+    }
+    status = validateUtf8Title(workspace.entry);
+    if (!status) {
+      return PdfStepResult::failure(status);
+    }
+    encodeEntry(workspace.entry, workspace.encoded);
+    const uint32_t crc = pdfCacheCrc32(workspace.encoded, PdfOutlineLimits::EncodedRecordBytes, runtime.crc32);
+    status = pdfWriteExact(destination, workspace.encoded, PdfOutlineLimits::EncodedRecordBytes);
+    if (!status) {
+      return PdfStepResult::failure(status);
+    }
+    runtime.crc32 = crc;
+    ++runtime.recordIndex;
+    return PdfStepResult::paused();
+  }
+
+  if (runtime.stage == PdfOutlineEncodeStage::Crc) {
+    if (budget.bytesRemaining < kCrcBytes || !budget.consumeOperation()) {
+      return PdfStepResult::paused();
+    }
+    (void)budget.takeBytes(kCrcBytes);
+    putU32(workspace.encoded, runtime.crc32);
+    const PdfStatus status = pdfWriteExact(destination, workspace.encoded, kCrcBytes);
+    if (!status) {
+      return PdfStepResult::failure(status);
+    }
+    runtime.stage = PdfOutlineEncodeStage::Complete;
+    return PdfStepResult::completed();
+  }
+
+  return runtime.stage == PdfOutlineEncodeStage::Complete
+             ? PdfStepResult::completed()
+             : PdfStepResult::failure(PdfStatus::failure(PdfError::InvalidArgument));
+}
+
+PdfStatus pdfEncodeOutline(const PdfOutlineEntrySource& entries, const PdfByteSink& destination) {
+  PdfOutlineEncodeRuntime runtime{};
+  PdfOutlineEncodeWorkspace workspace{};
+  PdfWorkBudget budget{UINT32_MAX, SIZE_MAX};
+  for (;;) {
+    const PdfStepResult result = pdfStepEncodeOutline(entries, destination, runtime, workspace, budget);
+    if (result.failed()) {
+      return result.status;
+    }
+    if (result.complete()) {
+      return PdfStatus::success();
+    }
+  }
+}
+
+PdfStatus pdfDecodeOutline(const PdfByteSource& source, PdfOutlineHeader* const header,
+                           const PdfOutlineEntryVisitor& entries) {
+  if (!source.valid() || header == nullptr || !entries.valid() || source.size < kHeaderBytes + kCrcBytes) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  uint8_t encodedHeader[kHeaderBytes]{};
+  PdfStatus status = pdfReadExact(source, 0, encodedHeader, sizeof(encodedHeader));
+  if (!status) {
+    return status;
+  }
+  const uint16_t count = getU16(encodedHeader + 8);
+  const uint64_t expectedSize =
+      kHeaderBytes + static_cast<uint64_t>(count) * PdfOutlineLimits::EncodedRecordBytes + kCrcBytes;
+  if (std::memcmp(encodedHeader, kMagic, sizeof(kMagic)) != 0 ||
+      getU16(encodedHeader + 4) != PdfOutlineLimits::CodecVersion ||
+      getU16(encodedHeader + 6) != PdfOutlineLimits::EncodedRecordBytes || count == 0 ||
+      count > PdfOutlineLimits::MaxEntries || getU16(encodedHeader + 10) != 0 ||
+      getU32(encodedHeader + 12) != static_cast<uint32_t>(count) * PdfOutlineLimits::EncodedRecordBytes ||
+      source.size != expectedSize) {
+    return PdfStatus::failure(PdfError::Malformed);
+  }
+
+  uint32_t crc = pdfCacheCrc32(encodedHeader, sizeof(encodedHeader));
+  uint64_t offset = sizeof(encodedHeader);
+  uint8_t levels[PdfOutlineLimits::MaxEntries]{};
+  for (uint16_t index = 0; index < count; ++index) {
+    uint8_t encoded[PdfOutlineLimits::EncodedRecordBytes]{};
+    status = pdfReadExact(source, offset, encoded, sizeof(encoded));
+    if (!status) {
+      return status;
+    }
+    offset += sizeof(encoded);
+    crc = pdfCacheCrc32(encoded, sizeof(encoded), crc);
+    PdfOutlineEntry entry = decodeEntry(encoded);
+    const uint8_t parentLevel = entry.parentIndex < 0 ? 0 : levels[entry.parentIndex];
+    if (!validEntry(entry, index, parentLevel)) {
+      return PdfStatus::failure(PdfError::Malformed, index);
+    }
+    status = validateUtf8Title(entry);
+    if (!status) {
+      return status;
+    }
+    levels[index] = entry.level;
+    status = entries.accept(entries.context, index, entry);
+    if (!status) {
+      return status;
+    }
+  }
+  uint8_t encodedCrc[kCrcBytes]{};
+  status = pdfReadExact(source, offset, encodedCrc, sizeof(encodedCrc));
+  if (!status) {
+    return status;
+  }
+  if (getU32(encodedCrc) != crc) {
+    return PdfStatus::failure(PdfError::Malformed, offset);
+  }
+  header->entryCount = count;
+  return PdfStatus::success();
+}
+
+PdfStatus pdfReadOutlineEntry(const PdfByteSource& source, const uint16_t index, PdfOutlineEntry* const entry) {
+  if (!source.valid() || entry == nullptr || source.size < kHeaderBytes + kCrcBytes) {
+    return PdfStatus::failure(PdfError::InvalidArgument);
+  }
+  uint8_t header[kHeaderBytes]{};
+  PdfStatus status = pdfReadExact(source, 0, header, sizeof(header));
+  if (!status) {
+    return status;
+  }
+  const uint16_t count = getU16(header + 8);
+  const uint64_t expectedSize =
+      kHeaderBytes + static_cast<uint64_t>(count) * PdfOutlineLimits::EncodedRecordBytes + kCrcBytes;
+  if (std::memcmp(header, kMagic, sizeof(kMagic)) != 0 || getU16(header + 4) != PdfOutlineLimits::CodecVersion ||
+      getU16(header + 6) != PdfOutlineLimits::EncodedRecordBytes || count == 0 ||
+      count > PdfOutlineLimits::MaxEntries || index >= count || getU16(header + 10) != 0 ||
+      getU32(header + 12) != static_cast<uint32_t>(count) * PdfOutlineLimits::EncodedRecordBytes ||
+      source.size != expectedSize) {
+    return PdfStatus::failure(PdfError::Malformed, index);
+  }
+
+  uint8_t encoded[PdfOutlineLimits::EncodedRecordBytes]{};
+  const uint64_t recordOffset = kHeaderBytes + static_cast<uint64_t>(index) * PdfOutlineLimits::EncodedRecordBytes;
+  status = pdfReadExact(source, recordOffset, encoded, sizeof(encoded));
+  if (!status) {
+    return status;
+  }
+  PdfOutlineEntry decoded = decodeEntry(encoded);
+  uint8_t parentLevel = 0;
+  if (decoded.parentIndex >= 0) {
+    if (decoded.parentIndex >= static_cast<int16_t>(index)) {
+      return PdfStatus::failure(PdfError::Malformed, index);
+    }
+    uint8_t parentEncoded[PdfOutlineLimits::EncodedRecordBytes]{};
+    const uint64_t parentOffset =
+        kHeaderBytes + static_cast<uint64_t>(decoded.parentIndex) * PdfOutlineLimits::EncodedRecordBytes;
+    status = pdfReadExact(source, parentOffset, parentEncoded, sizeof(parentEncoded));
+    if (!status) {
+      return status;
+    }
+    parentLevel = parentEncoded[10];
+  }
+  if (!validEntry(decoded, index, parentLevel)) {
+    return PdfStatus::failure(PdfError::Malformed, index);
+  }
+  status = validateUtf8Title(decoded);
+  if (status) {
+    *entry = decoded;
+  }
+  return status;
+}

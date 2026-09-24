@@ -1,11 +1,14 @@
 #pragma once
-#include <Epub.h>
+#include <ReflowDocument.h>
 
 #include <memory>
 #include <optional>
 #include <string>
 
 #include "KOReaderSyncClient.h"
+
+class Epub;
+class GfxRenderer;
 
 /**
  * CrossPoint position representation.
@@ -53,12 +56,12 @@ class ProgressMapper {
   /**
    * Convert CrossPoint position to KOReader format.
    *
-   * @param epub The EPUB book
+   * @param document The reflow document
    * @param pos CrossPoint position
    * @return KOReader position
    */
   static KOReaderPosition toKOReader(
-      const std::shared_ptr<Epub>& epub, const CrossPointPosition& pos,
+      const std::shared_ptr<ReflowDocument>& document, const CrossPointPosition& pos,
       PositionCoordinateSpace coordinateSpace = PositionCoordinateSpace::CurrentDocument);
 
   /**
@@ -67,28 +70,17 @@ class ProgressMapper {
    * Note: The returned pageNumber may be approximate since different
    * rendering settings produce different page counts.
    *
-   * @param epub The EPUB book
+   * @param document The reflow document
    * @param koPos KOReader position
    * @param currentSpineIndex Index of the currently open spine item (for density estimation)
    * @param totalPagesInCurrentSpine Total pages in the current spine item (for density estimation)
    * @return CrossPoint position
    */
   static CrossPointPosition toCrossPoint(
-      const std::shared_ptr<Epub>& epub, const KOReaderPosition& koPos, int currentSpineIndex = -1,
+      const std::shared_ptr<ReflowDocument>& document, const KOReaderPosition& koPos, int currentSpineIndex = -1,
       int totalPagesInCurrentSpine = 0,
       PositionCoordinateSpace coordinateSpace = PositionCoordinateSpace::CurrentDocument);
 
-  /**
-   * Convert a rich CrossPoint position (downloaded from a crosspoint-sync
-   * server) directly to a CrossPoint position, without XPath approximation.
-   * When the local layout matches the uploader's (same spine page count) the
-   * page transfers losslessly; otherwise the paragraph LUT or the intra-spine
-   * page fraction is used.
-   *
-   * @return The position, or std::nullopt when the rich position cannot be
-   *         applied (spine out of range, no section cache) and the caller
-   *         should fall back to toCrossPoint().
-   */
   static std::optional<CrossPointPosition> fromRichPosition(const std::shared_ptr<Epub>& epub,
                                                             const KOReaderRichPosition& rich, GfxRenderer& renderer);
 
@@ -99,5 +91,6 @@ class ProgressMapper {
    * Produces a full ancestry path such as
    * /body/DocFragment[3]/body/p[42]/text().17.
    */
-  static std::string generateXPath(const std::shared_ptr<Epub>& epub, int spineIndex, float intraSpineProgress);
+  static std::string generateXPath(const std::shared_ptr<ReflowDocument>& document, int spineIndex,
+                                   float intraSpineProgress);
 };

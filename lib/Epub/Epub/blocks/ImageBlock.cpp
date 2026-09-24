@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <utility>
 
 #include "Epub/converters/DirectPixelWriter.h"
@@ -33,6 +35,33 @@ void ImageBlock::setExtractor(void* context, ExtractFn extract, SeedCacheFn seed
 }
 
 namespace {
+
+class PdfPixelCacheWorkspaceLease {
+ public:
+  PdfPixelCacheWorkspaceLease(const bool requested, PdfPixelCacheRenderWorkspace* const workspace) {
+    if (requested && workspace != nullptr && !workspace->inUse) {
+      workspace->inUse = true;
+      workspace_ = workspace;
+    }
+  }
+
+  ~PdfPixelCacheWorkspaceLease() {
+    if (workspace_ != nullptr) {
+      workspace_->inUse = false;
+    }
+  }
+
+  uint8_t* data() const { return workspace_ == nullptr ? nullptr : workspace_->readBuffer; }
+  size_t size() const { return workspace_ == nullptr ? 0 : sizeof(workspace_->readBuffer); }
+  char* path() const { return workspace_ == nullptr ? nullptr : workspace_->path; }
+  size_t pathSize() const { return workspace_ == nullptr ? 0 : sizeof(workspace_->path); }
+
+  PdfPixelCacheWorkspaceLease(const PdfPixelCacheWorkspaceLease&) = delete;
+  PdfPixelCacheWorkspaceLease& operator=(const PdfPixelCacheWorkspaceLease&) = delete;
+
+ private:
+  PdfPixelCacheRenderWorkspace* workspace_ = nullptr;
+};
 
 std::string getCachePath(const std::string& imagePath) {
   // Replace extension with .pxc (pixel cache)
@@ -284,6 +313,198 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   return true;
 }
 
+bool endsWith(const std::string& value, const char* const suffix) {
+  const size_t suffixLength = std::strlen(suffix);
+  return value.size() >= suffixLength &&
+         std::memcmp(value.data() + value.size() - suffixLength, suffix, suffixLength) == 0;
+}
+
+bool consumeCanonicalDecimal(const std::string& path, size_t& offset, const uint64_t maximum) {
+  if (offset >= path.size() || path[offset] < '0' || path[offset] > '9') {
+    return false;
+  }
+  if (path[offset] == '0' && offset + 1U < path.size() && path[offset + 1U] >= '0' && path[offset + 1U] <= '9') {
+    return false;
+  }
+  uint64_t value = 0;
+  do {
+    const uint8_t digit = static_cast<uint8_t>(path[offset] - '0');
+    if (value > (maximum - digit) / 10U) {
+      return false;
+    }
+    value = value * 10U + digit;
+    ++offset;
+  } while (offset < path.size() && path[offset] >= '0' && path[offset] <= '9');
+  return true;
+}
+
+bool isCanonicalLowerHex(const char* const bytes, const size_t length) {
+  if (bytes == nullptr) {
+    return false;
+  }
+  for (size_t index = 0; index < length; ++index) {
+    if (!((bytes[index] >= '0' && bytes[index] <= '9') || (bytes[index] >= 'a' && bytes[index] <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool isCanonicalPdfImageLeaf(const char* const leaf, const size_t length) {
+  constexpr size_t hashDigits = 16;
+  constexpr size_t crcDigits = 8;
+  constexpr size_t encodedLengthDigits = 16;
+  constexpr char pixelSuffix[] = ".pxc";
+  constexpr char jpegSuffix[] = ".jpg";
+  constexpr size_t commonLength = hashDigits + 1U + crcDigits;
+  if (leaf == nullptr || length < commonLength || leaf[hashDigits] != '-' || !isCanonicalLowerHex(leaf, hashDigits) ||
+      !isCanonicalLowerHex(leaf + hashDigits + 1U, crcDigits)) {
+    return false;
+  }
+  if (length == commonLength + sizeof(pixelSuffix) - 1U) {
+    return std::memcmp(leaf + commonLength, pixelSuffix, sizeof(pixelSuffix) - 1U) == 0;
+  }
+  return length == commonLength + 1U + encodedLengthDigits + sizeof(jpegSuffix) - 1U && leaf[commonLength] == '-' &&
+         isCanonicalLowerHex(leaf + commonLength + 1U, encodedLengthDigits) &&
+         std::memcmp(leaf + commonLength + 1U + encodedLengthDigits, jpegSuffix, sizeof(jpegSuffix) - 1U) == 0;
+}
+
+[[gnu::noinline]] bool isCanonicalPdfCachedImagePath(const std::string& path) {
+  constexpr char root[] = "/.crosspoint/pdf_";
+  constexpr char generation[] = "/gen_";
+  constexpr char images[] = "/images/";
+  if (path.size() <= sizeof(root) - 1U || std::memcmp(path.data(), root, sizeof(root) - 1U) != 0) {
+    return false;
+  }
+  size_t offset = sizeof(root) - 1U;
+  if (!consumeCanonicalDecimal(path, offset, std::numeric_limits<uint64_t>::max()) ||
+      offset + sizeof(generation) - 1U >= path.size() ||
+      std::memcmp(path.data() + offset, generation, sizeof(generation) - 1U) != 0) {
+    return false;
+  }
+  offset += sizeof(generation) - 1U;
+  if (!consumeCanonicalDecimal(path, offset, std::numeric_limits<uint32_t>::max()) ||
+      offset + sizeof(images) - 1U >= path.size() ||
+      std::memcmp(path.data() + offset, images, sizeof(images) - 1U) != 0) {
+    return false;
+  }
+  offset += sizeof(images) - 1U;
+  return isCanonicalPdfImageLeaf(path.data() + offset, path.size() - offset);
+}
+
+[[gnu::noinline]] const char* getPdfPixelCachePath(const std::string& imagePath,
+                                                   const PdfPixelCacheWorkspaceLease& workspace,
+                                                   std::string& fallbackPath) {
+  if (endsWith(imagePath, ".pxc")) {
+    return imagePath.c_str();
+  }
+  char* const path = workspace.path();
+  const size_t pathBytes = workspace.pathSize();
+  if (path == nullptr) {
+    fallbackPath = getCachePath(imagePath);
+    return fallbackPath.c_str();
+  }
+  const size_t dot = imagePath.rfind('.');
+  const size_t stemLength = dot == std::string::npos ? imagePath.size() : dot;
+  constexpr char suffix[] = ".pxc";
+  if (stemLength + sizeof(suffix) > pathBytes) {
+    return nullptr;
+  }
+  std::memcpy(path, imagePath.data(), stemLength);
+  std::memcpy(path + stemLength, suffix, sizeof(suffix));
+  return path;
+}
+
+// PDF preparation writes 2-bit pixel caches (and JPEGs) at source resolution into
+// the immutable PDF cache. They are drawn with nearest-neighbour scaling to the
+// laid-out size instead of the EPUB exact-size cache contract.
+[[gnu::noinline]] bool renderScaledPdfCache(GfxRenderer& renderer, FsFile& cacheFile, const uint16_t cachedWidth,
+                                            const uint16_t cachedHeight, const int x, const int y,
+                                            const int outputWidth, const int outputHeight, uint8_t* const readBuffer,
+                                            const size_t readBufferBytes) {
+  if (outputWidth <= 0 || outputHeight <= 0 || cachedWidth == 0 || cachedHeight == 0) {
+    return false;
+  }
+  const auto clip = cachedImageClip(renderer, x, y, outputWidth, outputHeight);
+  if (clip.empty()) {
+    return true;
+  }
+  const size_t bytesPerRow = (static_cast<size_t>(cachedWidth) + 3U) / 4U;
+  if (readBuffer == nullptr || bytesPerRow == 0 || bytesPerRow > readBufferBytes ||
+      cacheFile.size() < 4U + bytesPerRow * cachedHeight) {
+    return false;
+  }
+  const int rowsPerRead = std::max<int>(1, static_cast<int>(readBufferBytes / bytesPerRow));
+  DirectPixelWriter pixelWriter;
+  pixelWriter.init(renderer);
+  int bufferedSourceStart = -1;
+  int bufferedSourceRows = 0;
+
+  for (int destinationRow = clip.y0; destinationRow < clip.y1; ++destinationRow) {
+    const int sourceRow = std::min<int>(
+        cachedHeight - 1, static_cast<int>((static_cast<uint32_t>(destinationRow) * cachedHeight) / outputHeight));
+    if (sourceRow < bufferedSourceStart || sourceRow >= bufferedSourceStart + bufferedSourceRows) {
+      bufferedSourceStart = sourceRow;
+      bufferedSourceRows = std::min<int>(rowsPerRead, cachedHeight - sourceRow);
+      const size_t sourceOffset = 4U + static_cast<size_t>(sourceRow) * bytesPerRow;
+      const size_t bytes = static_cast<size_t>(bufferedSourceRows) * bytesPerRow;
+      if (!cacheFile.seek(sourceOffset) || cacheFile.read(readBuffer, bytes) != static_cast<int>(bytes)) {
+        return false;
+      }
+    }
+    const uint8_t* const source = readBuffer + static_cast<size_t>(sourceRow - bufferedSourceStart) * bytesPerRow;
+    pixelWriter.beginRow(y + destinationRow);
+    for (int destinationColumn = clip.x0; destinationColumn < clip.x1; ++destinationColumn) {
+      const int sourceColumn = std::min<int>(
+          cachedWidth - 1, static_cast<int>((static_cast<uint32_t>(destinationColumn) * cachedWidth) / outputWidth));
+      const int byteIndex = sourceColumn >> 2;
+      const int bitShift = 6 - (sourceColumn & 3) * 2;
+      pixelWriter.writePixel(x + destinationColumn, static_cast<uint8_t>((source[byteIndex] >> bitShift) & 0x03U));
+    }
+  }
+  return true;
+}
+
+[[gnu::noinline]] bool renderPdfFromCache(GfxRenderer& renderer, const char* const cachePath, const int x, const int y,
+                                          const int expectedWidth, const int expectedHeight,
+                                          const PdfPixelCacheWorkspaceLease& pdfWorkspace) {
+  if (cachePath == nullptr || cachePath[0] == '\0' || !Storage.exists(cachePath)) {
+    return false;
+  }
+  FsFile cacheFile;
+  if (!Storage.openFileForRead("IMG", cachePath, cacheFile)) {
+    return false;
+  }
+  uint16_t cachedWidth = 0;
+  uint16_t cachedHeight = 0;
+  if (cacheFile.read(&cachedWidth, 2) != 2 || cacheFile.read(&cachedHeight, 2) != 2) {
+    cacheFile.close();
+    return false;
+  }
+  // Within one pixel is a rounding difference: draw 1:1 at the cached size.
+  const bool exact = abs(cachedWidth - expectedWidth) <= 1 && abs(cachedHeight - expectedHeight) <= 1;
+  const int outputWidth = exact ? cachedWidth : expectedWidth;
+  const int outputHeight = exact ? cachedHeight : expectedHeight;
+
+  // Reuse the reader's 4 KB session workspace; allocate only when it is absent
+  // or already leased by an enclosing render.
+  std::unique_ptr<uint8_t[]> ownedBuffer;
+  uint8_t* buffer = pdfWorkspace.data();
+  size_t bufferBytes = pdfWorkspace.size();
+  if (buffer == nullptr) {
+    ownedBuffer = makeUniqueNoThrow<uint8_t[]>(PdfPixelCacheRenderWorkspace::READ_BUFFER_BYTES);
+    buffer = ownedBuffer.get();
+    bufferBytes = buffer == nullptr ? 0 : PdfPixelCacheRenderWorkspace::READ_BUFFER_BYTES;
+  }
+  const bool rendered = renderScaledPdfCache(renderer, cacheFile, cachedWidth, cachedHeight, x, y, outputWidth,
+                                             outputHeight, buffer, bufferBytes);
+  cacheFile.close();
+  if (!rendered) {
+    LOG_ERR("IMG", "Failed to render PDF pixel cache: %s", cachePath);
+  }
+  return rendered;
+}
+
 }  // namespace
 
 bool ImageBlock::hasValidCache() const {
@@ -338,6 +559,11 @@ void ImageBlock::renderPlaceholder(GfxRenderer& renderer, const int x, const int
 }
 
 void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, const bool foregroundBlack) {
+  render(renderer, x, y, foregroundBlack, nullptr);
+}
+
+void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, const bool foregroundBlack,
+                        PdfPixelCacheRenderWorkspace* const pdfWorkspace) {
   // The font-prewarm scan pass only accumulates glyphs; an image contributes
   // none, and its DirectPixelWriter output bypasses the renderer's scan-mode
   // suppression, so it would otherwise do a full (discarded) cache render every
@@ -378,11 +604,26 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, const b
     return;
   }
 
-  // Try to render from cache first
-  std::string cachePath = getCachePath(imagePath);
-  if (renderFromCache(renderer, cachePath, x, y, width, height)) {
-    renderer.preserveImagePolarity(x, y, width, height);
-    return;  // Successfully rendered from cache
+  // PDF images live in the immutable PDF cache at source resolution. The lease
+  // spans path derivation, cache reads, and first-time JPEG decode so a nested
+  // render cannot overwrite either shared scratch region.
+  const bool pdfCachedImage = isCanonicalPdfCachedImagePath(imagePath);
+  PdfPixelCacheWorkspaceLease workspaceLease(pdfCachedImage, pdfWorkspace);
+  std::string cachePath;
+  const char* pdfCachePath = nullptr;
+  if (pdfCachedImage) {
+    pdfCachePath = getPdfPixelCachePath(imagePath, workspaceLease, cachePath);
+    if (renderPdfFromCache(renderer, pdfCachePath, x, y, width, height, workspaceLease)) {
+      renderer.preserveImagePolarity(x, y, width, height);
+      return;
+    }
+  } else {
+    // Try to render from cache first
+    cachePath = getCachePath(imagePath);
+    if (renderFromCache(renderer, cachePath, x, y, width, height)) {
+      renderer.preserveImagePolarity(x, y, width, height);
+      return;  // Successfully rendered from cache
+    }
   }
 
   // No cache - need to decode the image
@@ -414,7 +655,8 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y, const b
   config.performanceMode = false;
   config.useExactDimensions = true;  // Use pre-calculated dimensions to avoid rounding mismatches
   if (fullyOnScreen) {
-    config.cachePath = cachePath;  // Enable caching during decode
+    // Enable caching during decode
+    config.cachePath = pdfCachedImage ? (pdfCachePath ? std::string(pdfCachePath) : std::string{}) : cachePath;
   }
 
   ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);

@@ -4,11 +4,20 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
+#include <PdfHalReflowDocument.h>
+#include <PdfSourceIdentity.h>
+
+#ifdef SIMULATOR
+#include <cstdlib>
+#endif
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "Epub.h"
 #include "EpubReaderActivity.h"
+#include "PdfPrepareActivity.h"
+#include "ReaderRoute.h"
+#include "SdCardFontSystem.h"
 #include "Txt.h"
 #include "TxtReaderActivity.h"
 #include "Xtc.h"
@@ -17,6 +26,7 @@
 #include "activities/util/ChecklistActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
 #include "components/UITheme.h"
+#include "util/BookMoveUtils.h"
 
 bool ReaderActivity::isXtcFile(const std::string& path) { return FsHelpers::hasXtcExtension(path); }
 
@@ -34,6 +44,11 @@ bool ReaderActivity::shouldShowLoadingPopup(const std::string& path) {
   // just add an extra full e-ink refresh (~3s on X3) before the reader paints
   // its first page; that page's own refresh is the visible "working" feedback.
   // Other formats, and EPUBs without a metadata cache yet, keep the popup.
+  if (FsHelpers::hasPdfExtension(path)) {
+    // PDF preparation owns its static progress screen; a separate popup would
+    // add an unnecessary full e-ink refresh.
+    return false;
+  }
   if (isXtcFile(path) || isTxtFile(path) || isImagePreviewFile(path)) {
     return true;
   }
@@ -144,6 +159,17 @@ void ReaderActivity::goToLibrary(const std::string& fromBookPath) {
   activityManager.goToFileBrowser(std::move(initialPath));
 }
 
+void ReaderActivity::onGoToReflowReader(std::unique_ptr<ReflowDocument> document) {
+  currentBookPath = document->getPath();
+  auto reader = makeUniqueNoThrow<EpubReaderActivity>(renderer, mappedInput, std::move(document));
+  if (!reader) {
+    LOG_ERR("READER", "Failed to allocate reflow reader");
+    onGoBack();
+    return;
+  }
+  activityManager.replaceActivity(std::move(reader));
+}
+
 void ReaderActivity::onGoToEpubReader(std::unique_ptr<Epub> epub,
                                       EpubReaderActivity::BookReaderSettingsData readerSettings) {
   const auto epubPath = epub->getPath();
@@ -176,6 +202,114 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
       renderer, mappedInput, std::move(txt), initialRefreshCountdown(), allowFastInitialRefresh, returnToChecklists));
 }
 
+bool ReaderActivity::openLibraryRoute() {
+  goToLibrary();
+  return true;
+}
+
+bool ReaderActivity::openImageRoute() {
+  onGoToBmpViewer(initialBookPath);
+  return true;
+}
+
+bool ReaderActivity::openXtcRoute() {
+  auto xtc = loadXtc(initialBookPath);
+  if (!xtc) {
+    onGoBack();
+    return false;
+  }
+  onGoToXtcReader(std::move(xtc));
+  return true;
+}
+
+bool ReaderActivity::openTextRoute() {
+  auto txt = loadTxt(initialBookPath);
+  if (!txt) {
+    onGoBack();
+    return false;
+  }
+  onGoToTxtReader(std::move(txt));
+  return true;
+}
+
+bool ReaderActivity::openPdfRoute() {
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  const uint64_t normalCacheHash = pdfPathHash64(initialBookPath.c_str(), initialBookPath.size());
+  uint64_t resolvedCacheHash = normalCacheHash;
+  bool readOnlyFallback = true;
+  const bool cacheResolved =
+      BookMoveUtils::migrationCacheHash(initialBookPath, normalCacheHash, &resolvedCacheHash, &readOnlyFallback);
+  if (!cacheResolved || readOnlyFallback) {
+    LOG_ERR("READER", "PDF open blocked by read-only migration cache state");
+    onGoBack();
+    return false;
+  }
+  if (!Storage.exists(initialBookPath.c_str())) {
+    LOG_ERR("READER", "PDF file does not exist: %s", initialBookPath.c_str());
+    onGoBack();
+    return false;
+  }
+  const uint64_t* const cacheHashOverride = resolvedCacheHash == normalCacheHash ? nullptr : &resolvedCacheHash;
+  PdfStatus status{};
+  auto document = loadPdfHalReflowDocumentNoThrow(initialBookPath.c_str(), "/.crosspoint", &status, cacheHashOverride);
+#ifdef SIMULATOR
+  const char* const injectedCacheErrorBook = std::getenv("CROSSINK_SIMULATOR_PDF_CACHE_ERROR_BOOK");
+  if (injectedCacheErrorBook != nullptr && initialBookPath == injectedCacheErrorBook) {
+    document.reset();
+    status = PdfStatus::failure(PdfError::IoFailure);
+  }
+#endif
+  if (document) {
+    onGoToReflowReader(std::move(document));
+    return true;
+  }
+  if (status.error == PdfError::InsufficientMemory || status.error == PdfError::IoFailure ||
+      status.error == PdfError::InvalidArgument) {
+    LOG_ERR("READER", "PDF cache check failed before preparation: error=%u", static_cast<unsigned>(status.error));
+    auto errorActivity = makeUniqueNoThrow<PdfPrepareActivity>(renderer, mappedInput, initialBookPath, status);
+    if (!errorActivity) {
+      LOG_ERR("READER", "Failed to allocate PDF error activity");
+      onGoBack();
+      return false;
+    }
+    activityManager.replaceActivity(std::move(errorActivity));
+    return true;
+  }
+  auto preparation = makeUniqueNoThrow<PdfPrepareActivity>(renderer, mappedInput, initialBookPath);
+  if (!preparation) {
+    LOG_ERR("READER", "Failed to allocate PDF preparation activity");
+    onGoBack();
+    return false;
+  }
+  activityManager.replaceActivity(std::move(preparation));
+  return true;
+#else
+  LOG_ERR("READER", "PDF reader is disabled in this firmware build");
+  onGoBack();
+  return false;
+#endif
+}
+
+bool ReaderActivity::openEpubRoute() {
+  auto result = loadEpub(initialBookPath);
+  if (!result.epub) {
+    queueEpubOpenAlert(result.failure);
+    onGoBack();
+    return false;
+  }
+  onGoToEpubReader(std::move(result.epub), std::move(result.readerSettings));
+  return true;
+}
+
+bool ReaderActivity::dispatchLibrary(void* context) {
+  return static_cast<ReaderActivity*>(context)->openLibraryRoute();
+}
+bool ReaderActivity::dispatchImage(void* context) { return static_cast<ReaderActivity*>(context)->openImageRoute(); }
+bool ReaderActivity::dispatchXtc(void* context) { return static_cast<ReaderActivity*>(context)->openXtcRoute(); }
+bool ReaderActivity::dispatchText(void* context) { return static_cast<ReaderActivity*>(context)->openTextRoute(); }
+bool ReaderActivity::dispatchPdf(void* context) { return static_cast<ReaderActivity*>(context)->openPdfRoute(); }
+bool ReaderActivity::dispatchEpub(void* context) { return static_cast<ReaderActivity*>(context)->openEpubRoute(); }
+
 void ReaderActivity::onEnter() {
   Activity::onEnter();
 
@@ -183,18 +317,10 @@ void ReaderActivity::onEnter() {
     mappedInput.suppressNextBackRelease();
   }
 
-  if (initialBookPath.empty()) {
-    goToLibrary();  // Start from root when entering via Browse
-    return;
-  }
+  const ReaderRoute route = selectReaderRoute(initialBookPath);
 
-  if (shouldShowLoadingPopup(initialBookPath)) {
+  if (route != ReaderRoute::Library && shouldShowLoadingPopup(initialBookPath)) {
     GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-  }
-
-  if (isImagePreviewFile(initialBookPath)) {
-    onGoToBmpViewer(initialBookPath);
-    return;
   }
 
   currentBookPath = initialBookPath;
@@ -220,29 +346,11 @@ void ReaderActivity::onEnter() {
       return;
     }
   }
-  if (isXtcFile(initialBookPath)) {
-    auto xtc = loadXtc(initialBookPath);
-    if (!xtc) {
-      onGoBack();
-      return;
-    }
-    onGoToXtcReader(std::move(xtc));
-  } else if (isTxtFile(initialBookPath)) {
-    auto txt = loadTxt(initialBookPath);
-    if (!txt) {
-      onGoBack();
-      return;
-    }
-    onGoToTxtReader(std::move(txt));
-  } else {
-    auto result = loadEpub(initialBookPath);
-    if (!result.epub) {
-      queueEpubOpenAlert(result.failure);
-      onGoBack();
-      return;
-    }
-    onGoToEpubReader(std::move(result.epub), std::move(result.readerSettings));
-  }
+
+  const ReaderRouteHandlers handlers{
+      this, dispatchLibrary, dispatchImage, dispatchXtc, dispatchText, dispatchPdf, dispatchEpub,
+  };
+  (void)dispatchReaderRoute(initialBookPath, handlers);
 }
 
 void ReaderActivity::onGoBack() { finish(); }

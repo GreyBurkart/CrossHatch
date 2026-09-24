@@ -327,7 +327,11 @@ TEST(ClippingLayout, CachesLegacyBoundaryRangesWithoutAHeapAllocation) {
   clipping.pageCount = 10;
   clipping.layoutSignature = 123;
 
-  EXPECT_EQ(sizeof(Clipping), 84U);
+  // 84 bytes of fixed fields plus the inline PDF text (empty, SSO, for EPUB).
+  constexpr size_t kFixedFieldBytes = 84U;
+  constexpr size_t kTextOffset =
+      (kFixedFieldBytes + alignof(std::string) - 1U) / alignof(std::string) * alignof(std::string);
+  EXPECT_EQ(sizeof(Clipping), kTextOffset + sizeof(std::string));
   EXPECT_FALSE(clippingCachedRangeReadyOnPage(clipping, 2));
   EXPECT_TRUE(clippingCachedRangeReadyOnPage(clipping, 3));
   EXPECT_FALSE(clippingCachedRangeReadyOnPage(clipping, 4));

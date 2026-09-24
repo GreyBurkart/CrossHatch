@@ -145,8 +145,12 @@ void buildWrappedDetailLines(const GfxRenderer& renderer, const int fontId, cons
 }
 }  // namespace
 
-EpubReaderClippingListActivity::EpubReaderClippingListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+EpubReaderClippingListActivity::EpubReaderClippingListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                                               const DeleteCallback deleteCallback,
+                                                               void* const deleteContext)
     : Activity("EpubClippingList", renderer, mappedInput),
+      deleteCallback(deleteCallback),
+      deleteContext(deleteContext),
       uiTarget(makeUiTarget(renderer)),
       app(uiTarget, uiTarget.deviceContext()) {}
 
@@ -249,7 +253,12 @@ void EpubReaderClippingListActivity::rebuildDetailLayoutIfNeeded() {
 void EpubReaderClippingListActivity::deleteSelectedClipping() {
   if (selectedIndex < 0 || selectedIndex >= static_cast<int>(CLIPPINGS.clippingCount())) return;
 
-  if (!CLIPPINGS.removeClippingAt(static_cast<size_t>(selectedIndex))) return;
+  // PDF clippings are keyed by their saved-item id (stored in paragraphIndex).
+  const Clipping* const selected = CLIPPINGS.clippingAt(static_cast<size_t>(selectedIndex));
+  const bool removed = deleteCallback == nullptr
+                           ? CLIPPINGS.removeClippingAt(static_cast<size_t>(selectedIndex))
+                           : selected != nullptr && deleteCallback(deleteContext, selected->paragraphIndex);
+  if (!removed) return;
 
   detailMode = false;
   detailText.clear();

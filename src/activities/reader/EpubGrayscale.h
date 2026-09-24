@@ -5,6 +5,7 @@
 
 class GfxRenderer;
 class Page;
+struct PdfPixelCacheRenderWorkspace;
 
 namespace EpubGrayscale {
 constexpr int GRAYSCALE_STRIP_ROWS = 80;
@@ -13,5 +14,6 @@ constexpr int GRAYSCALE_STRIP_ROWS = 80;
 // leaves the caller responsible for its existing BW-snapshot fallback.
 bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, int fontId, int marginLeft, int marginTop,
                            bool foregroundBlack, bool needsTextGrayscale, bool needsImageGrayscale, uint8_t* scratch,
-                           size_t scratchSize, bool asyncRefreshPending);
+                           size_t scratchSize, bool asyncRefreshPending,
+                           PdfPixelCacheRenderWorkspace* pdfWorkspace = nullptr);
 }  // namespace EpubGrayscale

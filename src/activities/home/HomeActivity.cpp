@@ -777,12 +777,35 @@ bool HomeActivity::pinnedBookFitsOnHome(const bool hasContinueReadingRow) const 
   return GUI.buttonMenuFits(renderer, menuRect, menuCount);
 }
 
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+void HomeActivity::loadPdfRecentProducts() {
+  pdfProductCache.reset();
+  cachedPdfProducts.fill(false);
+  cachedBookProgress.fill(-1.0f);
+  for (std::string& chapter : cachedBookChapters) {
+    chapter.clear();
+  }
+
+  const int count = std::min(static_cast<int>(recentBooks.size()), kMaxCachedBooks);
+  for (int i = 0; i < count; ++i) {
+    cachedPdfProducts[i] = RecentBookProgress::hydratePdfBook(pdfProductCache, recentBooks[i], &cachedBookProgress[i],
+                                                              &cachedBookChapters[i]);
+  }
+}
+#endif
+
 void HomeActivity::loadAllBookStats() {
   const auto start = millis();
   const int count = std::min(static_cast<int>(recentBooks.size()), kMaxCachedBooks);
   for (int i = 0; i < count; ++i) {
     cachedBookStats[i] = loadRecentBookStats(recentBooks[i]);
-    cachedBookProgress[i] = RecentBookProgress::loadPercent(recentBooks[i]);
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+    if (!cachedPdfProducts[i]) {
+#endif
+      cachedBookProgress[i] = RecentBookProgress::loadPercent(recentBooks[i]);
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+    }
+#endif
   }
   bookStatsCached = true;
   LOG_DBG("HOME", "carousel: cached stats/progress for %d book(s) in %lums", count, millis() - start);
@@ -824,6 +847,12 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
       progress++;
       continue;
     }
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+    if (FsHelpers::hasPdfExtension(book.path)) {
+      progress++;
+      continue;
+    }
+#endif
     ensureReusableCoverPath(book);
     if (!book.coverBmpPath.empty()) {
       if (isCarouselTheme) {
@@ -1014,6 +1043,7 @@ void HomeActivity::onEnter() {
   minimalHomeNavIndex = -1;
   carouselFramesReady = false;
   carouselWarmupPending = isCarouselTheme;
+  bookStatsCached = false;
 
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int recentBooksToLoad =
@@ -1068,6 +1098,9 @@ void HomeActivity::onEnter() {
   if (!selectInitialBook(initialBookPath)) {
     selectInitialBook(APP_STATE.openEpubPath);
   }
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  loadPdfRecentProducts();
+#endif
 
   globalStats = GlobalReadingStats::load();
   showAllDevicesStats = GlobalReadingStats::hasSyncedStats();
@@ -1130,6 +1163,13 @@ void HomeActivity::showNextRecentBookOnHome() {
   }
 
   std::rotate(recentBooks.begin(), recentBooks.begin() + 1, recentBooks.end());
+  const size_t activeCount = recentBooks.size();
+  std::rotate(cachedBookStats.begin(), cachedBookStats.begin() + 1, cachedBookStats.begin() + activeCount);
+  std::rotate(cachedBookProgress.begin(), cachedBookProgress.begin() + 1, cachedBookProgress.begin() + activeCount);
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  std::rotate(cachedBookChapters.begin(), cachedBookChapters.begin() + 1, cachedBookChapters.begin() + activeCount);
+  std::rotate(cachedPdfProducts.begin(), cachedPdfProducts.begin() + 1, cachedPdfProducts.begin() + activeCount);
+#endif
   selectorIndex = 0;
   lastCarouselBookIndex = 0;
   bookStatsCached = false;
@@ -1220,11 +1260,23 @@ void HomeActivity::updateHighlightedBookContext(const bool allowEpubLoad) {
 
   const int idx = getHighlightedBookIndex();
   const bool useCachedStats = idx >= 0 && bookStatsCached && idx < kMaxCachedBooks;
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  const bool useCachedPdfProducts = idx >= 0 && idx < kMaxCachedBooks && cachedPdfProducts[idx];
+#endif
   if (idx >= 0) {
     const RecentBook& book = recentBooks[idx];
     const bool isEpub = FsHelpers::hasEpubExtension(book.path);
     const bool loadChapterTitle = isDashboardTheme();
-    if (useCachedStats) {
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+    if (useCachedPdfProducts) {
+      currentBookStats = useCachedStats ? cachedBookStats[idx] : loadRecentBookStats(book);
+      currentBookProgressPercent = cachedBookProgress[idx];
+      if (loadChapterTitle) {
+        currentBookChapterTitle = cachedBookChapters[idx];
+      }
+    } else
+#endif
+        if (useCachedStats) {
       currentBookStats = cachedBookStats[idx];
       currentBookProgressPercent = cachedBookProgress[idx];
       if (allowEpubLoad && loadChapterTitle && isEpub) {
@@ -1256,6 +1308,9 @@ void HomeActivity::onExit() {
   gCarouselCache.invalidate();
   freeCarouselFrames();
   carouselWarmupPending = false;
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  pdfProductCache.reset();
+#endif
 }
 
 bool HomeActivity::storeCoverBuffer() {
@@ -1394,9 +1449,17 @@ void HomeActivity::renderCarouselFrameToCurrentBuffer(int bookIdx, BookReadingSt
     if (bookStatsCached && bookIdx < kMaxCachedBooks) {
       usedCachedStats = true;
       frameStats = cachedBookStats[bookIdx];
-      frameProgressPercent = cachedBookProgress[bookIdx];
     } else {
       frameStats = loadRecentBookStats(recentBooks[bookIdx]);
+    }
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+    if (bookIdx < kMaxCachedBooks && cachedPdfProducts[bookIdx]) {
+      frameProgressPercent = cachedBookProgress[bookIdx];
+    } else
+#endif
+        if (bookStatsCached && bookIdx < kMaxCachedBooks) {
+      frameProgressPercent = cachedBookProgress[bookIdx];
+    } else {
       frameProgressPercent = RecentBookProgress::loadPercent(recentBooks[bookIdx]);
     }
     if (hasAnyBookStats(frameStats)) frameStatsPtr = &frameStats;

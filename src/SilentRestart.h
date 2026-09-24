@@ -38,7 +38,7 @@ static_assert(isNetworkBootTargetValue(static_cast<uint32_t>(NetworkBootTarget::
               "Every network boot target must pass RTC target validation");
 
 void silentRestart();                                            // home screen
-void silentRestartToReader(bool cleanImageBaseOnEntry = false);  // currently-open EPUB (APP_STATE.openEpubPath)
+void silentRestartToReader(bool cleanImageBaseOnEntry = false);  // currently open book (APP_STATE.openBookPath())
 // Network activities use these after releasing Wi-Fi resources. They retain
 // the fast restart but apply the user's frontlight wake preference.
 void silentRestartAfterNetwork();

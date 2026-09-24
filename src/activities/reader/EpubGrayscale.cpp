@@ -14,7 +14,7 @@ namespace EpubGrayscale {
 bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, const int fontId, const int marginLeft,
                            const int marginTop, const bool foregroundBlack, const bool needsTextGrayscale,
                            const bool needsImageGrayscale, uint8_t* scratch, const size_t scratchSize,
-                           const bool asyncRefreshPending) {
+                           const bool asyncRefreshPending, PdfPixelCacheRenderWorkspace* const pdfWorkspace) {
   if ((!needsTextGrayscale && !needsImageGrayscale) || !renderer.supportsStripGrayscale()) {
     return false;
   }
@@ -30,9 +30,9 @@ bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, const int fo
     renderer.beginStripTarget(buffer, 0, displayHeight);
     renderer.clearScreen(0x00);
     if (needsTextGrayscale) {
-      page.render(renderer, fontId, marginLeft, marginTop, foregroundBlack);
+      page.render(renderer, fontId, marginLeft, marginTop, foregroundBlack, pdfWorkspace);
     } else {
-      page.renderImages(renderer, fontId, marginLeft, marginTop);
+      page.renderImages(renderer, fontId, marginLeft, marginTop, pdfWorkspace);
     }
     renderer.endStripTarget();
   };
@@ -108,9 +108,9 @@ bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, const int fo
       renderer.beginStripTarget(scratch, y, rows);
       renderer.clearScreen(0x00);
       if (needsTextGrayscale) {
-        page.render(renderer, fontId, marginLeft, marginTop, foregroundBlack);
+        page.render(renderer, fontId, marginLeft, marginTop, foregroundBlack, pdfWorkspace);
       } else {
-        page.renderImages(renderer, fontId, marginLeft, marginTop);
+        page.renderImages(renderer, fontId, marginLeft, marginTop, pdfWorkspace);
       }
       renderer.endStripTarget();
       renderer.writeGrayscalePlaneStrip(lsbPlane, scratch, y, rows);

@@ -55,6 +55,8 @@ class PageImage final : public PageElement {
       : PageElement(xPos, yPos), imageBlock(std::move(block)) {}
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, bool foregroundBlack = true) override;
   void renderPlaceholder(GfxRenderer& renderer, int xOffset, int yOffset, bool foregroundBlack) const;
+  void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, bool foregroundBlack,
+              PdfPixelCacheRenderWorkspace* pdfWorkspace);
   bool serialize(FsFile& file) override;
   PageElementTag getTag() const override { return TAG_PageImage; }
   static std::unique_ptr<PageImage> deserialize(FsFile& file);
@@ -192,8 +194,14 @@ class Page {
   }
 
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, bool foregroundBlack = true) const;
+  void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, bool foregroundBlack,
+              PdfPixelCacheRenderWorkspace* pdfWorkspace) const;
   void renderText(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, bool foregroundBlack = true) const;
   void renderImages(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, bool foregroundBlack = true) const;
+  void renderImages(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
+                    PdfPixelCacheRenderWorkspace* pdfWorkspace) const;
+  void renderImages(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, bool foregroundBlack,
+                    PdfPixelCacheRenderWorkspace* pdfWorkspace) const;
   void renderWithImagePlaceholders(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
                                    bool foregroundBlack = true) const;
   bool forEachTextLine(PageTextLineVisitor visitor, void* context) const;

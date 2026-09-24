@@ -1,6 +1,9 @@
 #include "RecentBooksActivity.h"
 
 #include <Arduino.h>
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+#include <FsHelpers.h>
+#endif
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -42,6 +45,9 @@ RecentBooksActivity::RecentBooksActivity(GfxRenderer& renderer, MappedInputManag
 
 void RecentBooksActivity::loadRecentBooks() {
   recentBooks.clear();
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  pdfProductCache.reset();
+#endif
   scanStatus = {};
   if (viewMode == ViewMode::RecentlyAdded) {
     scanStatus = VirtualViews::loadRecentlyAdded(recentBooks);
@@ -61,7 +67,13 @@ void RecentBooksActivity::loadRecentBooks() {
     if (RecentBooksStore::isMissing(book)) {
       continue;
     }
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+    RecentBook displayBook = book;
+    RecentBookProgress::hydratePdfBook(pdfProductCache, displayBook);
+    recentBooks.push_back(std::move(displayBook));
+#else
     recentBooks.push_back(book);
+#endif
   }
 }
 
@@ -142,6 +154,9 @@ void RecentBooksActivity::onEnter() {
 void RecentBooksActivity::onExit() {
   Activity::onExit();
   std::vector<RecentBook>().swap(recentBooks);
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  pdfProductCache.reset();
+#endif
 }
 
 void RecentBooksActivity::loop() {

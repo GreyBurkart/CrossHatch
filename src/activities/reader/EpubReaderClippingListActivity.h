@@ -14,7 +14,11 @@
 
 class EpubReaderClippingListActivity final : public Activity {
  public:
-  EpubReaderClippingListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
+  using DeleteCallback = bool (*)(void* context, uint16_t itemId);
+
+  // PDF readers pass a delete callback so removals also update the PDF saved-item index.
+  EpubReaderClippingListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                 DeleteCallback deleteCallback = nullptr, void* deleteContext = nullptr);
 
   void onEnter() override;
   void loop() override;
@@ -31,6 +35,8 @@ class EpubReaderClippingListActivity final : public Activity {
   bool longPressConfirmHandled = false;
   bool detailMode = false;
   bool initialListRender = true;
+  DeleteCallback deleteCallback = nullptr;
+  void* deleteContext = nullptr;
   using UiApp = freeink::ui::FreeInkApp<20, 4>;
   // Caps the rendered row window: the label buffers below are fixed size, so the
   // visible-row count from the theme geometry must never exceed them.

@@ -29,7 +29,8 @@ class ClipSelectionActivity final : public Activity {
   ClipSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, ClipWordStore wordStore, int fontId,
                         Section& section, int startPageInSection, int marginTop, int marginLeft,
                         const DictionaryClippingRequest* dictionaryRequest = nullptr,
-                        bool ignoreInitialBackRelease = false);
+                        bool ignoreInitialBackRelease = false,
+                        PdfPixelCacheRenderWorkspace* pdfRenderWorkspace = nullptr);
 
   void onEnter() override;
   void onExit() override;
@@ -47,6 +48,9 @@ class ClipSelectionActivity final : public Activity {
   ClipWordStore wordStore;
   int renderFontId = 0;
   Section& section;
+  // Non-owning: the parent EpubReaderActivity remains on the activity stack
+  // while this child runs, just as it does for the borrowed Section reference.
+  PdfPixelCacheRenderWorkspace* pdfRenderWorkspace = nullptr;
   int startPageInSection = 0;
   int marginTop = 0;
   int marginLeft = 0;

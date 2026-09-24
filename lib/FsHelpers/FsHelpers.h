@@ -30,7 +30,7 @@ bool resolveRootDirectoryIgnoreCase(const char* expectedPath, char* resolvedPath
 
 std::string decodeUriEscapes(const std::string& path);
 
-std::string normalisePath(const std::string& path);
+std::string normalisePath(const std::string& path, bool preserveRoot = false);
 
 // Numeric-aware, case-insensitive comparison ("2" < "10"). Returns true when str1 orders
 // before str2. Same ordering sortFileList applies within the file/directory groups.
@@ -71,6 +71,12 @@ inline bool hasGifExtension(const String& fileName) {
 bool hasEpubExtension(std::string_view fileName);
 inline bool hasEpubExtension(const String& fileName) {
   return hasEpubExtension(std::string_view{fileName.c_str(), fileName.length()});
+}
+
+// Check for .pdf extension (case-insensitive)
+bool hasPdfExtension(std::string_view fileName);
+inline bool hasPdfExtension(const String& fileName) {
+  return hasPdfExtension(std::string_view{fileName.c_str(), fileName.length()});
 }
 
 // Check for either .xtc or .xtch extension (case-insensitive)

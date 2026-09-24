@@ -17,6 +17,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <PdfSourceIdentity.h>
 #include <SPI.h>
 #if !defined(SIMULATOR) && !FREEINK_MCU_C3
 #include <XteinkDetect.h>
@@ -114,11 +115,13 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 #endif
 #include "images/LoadingIcon.h"
 #include "util/BatteryDiagnosticLog.h"
+#include "util/BookMoveUtils.h"
 #include "util/ButtonNavigator.h"
 #include "util/ButtonShortcutController.h"
 #include "util/Dictionary.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FrontlightSchedule.h"
+#include "util/PdfDeleteUtils.h"
 #include "util/ScreenshotUtil.h"
 #include "util/SleepWakePolicy.h"
 
@@ -494,7 +497,7 @@ bool startGlobalSyncProgress(const bool networkBootReady, const uint8_t readerOr
     return true;
   }
 
-  std::string epubPath = APP_STATE.openEpubPath;
+  const std::string epubPath = APP_STATE.openBookPath();
   if (epubPath.empty() || !FsHelpers::hasEpubExtension(epubPath) || !Storage.exists(epubPath.c_str())) {
     if (networkBootReady) return false;
     LOG_DBG("MAIN", "No syncable EPUB open, opening KOReader settings instead");
@@ -1426,6 +1429,37 @@ void setup() {
   BatteryDiagnosticLog::record(BatteryDiagnosticLog::Event::Wake, BoardConfig::ACTIVE.name,
                                wakeupRouteName(wakeupReason));
   const bool isSleepWake = wakeupReason == HalGPIO::WakeupReason::PowerButton;
+  // Journal recovery lazily loads recents only when a PDF delete or move is pending.
+  const PdfDeleteUtils::Result deleteRecovery = PdfDeleteUtils::recoverPendingPdfDelete();
+  const bool bookDeleteRecoveryBlocked = deleteRecovery == PdfDeleteUtils::Result::Pending ||
+                                         deleteRecovery == PdfDeleteUtils::Result::Conflict ||
+                                         deleteRecovery == PdfDeleteUtils::Result::Invalid;
+  if (bookDeleteRecoveryBlocked) {
+    LOG_ERR("MAIN", "PDF delete recovery remains pending (%u)", static_cast<unsigned>(deleteRecovery));
+  }
+  const BookMoveUtils::MoveResult moveRecovery =
+      bookDeleteRecoveryBlocked ? BookMoveUtils::MoveResult::Pending : BookMoveUtils::recoverPendingBookMove();
+  const bool bookMoveRecoveryBlocked = moveRecovery == BookMoveUtils::MoveResult::Pending ||
+                                       moveRecovery == BookMoveUtils::MoveResult::Conflict ||
+                                       moveRecovery == BookMoveUtils::MoveResult::Invalid;
+  if (bookMoveRecoveryBlocked) {
+    LOG_ERR("MAIN", "Book move recovery remains pending (%u)", static_cast<unsigned>(moveRecovery));
+  }
+  bool bookMoveResumeBlocked = false;
+  if (FsHelpers::hasPdfExtension(APP_STATE.openBookPath())) {
+    const std::string& openBookPath = APP_STATE.openBookPath();
+    const BookMutationFence deleteFence = PdfDeleteUtils::mutationFenceForPath(openBookPath);
+    bookMoveResumeBlocked =
+        deleteFence == BookMutationFence::MatchingPending || deleteFence == BookMutationFence::Indeterminate;
+    if (!bookMoveResumeBlocked && bookMoveRecoveryBlocked) {
+      const uint64_t normalCacheHash = pdfPathHash64(openBookPath.c_str(), openBookPath.size());
+      uint64_t resolvedCacheHash = normalCacheHash;
+      bool readOnlyFallback = true;
+      const bool cacheResolved =
+          BookMoveUtils::migrationCacheHash(openBookPath, normalCacheHash, &resolvedCacheHash, &readOnlyFallback);
+      bookMoveResumeBlocked = !cacheResolved || readOnlyFallback;
+    }
+  }
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   // Normal boot store deferral adapted from Sichroteph/YACP commit
   // 20af8aee8d3e1d560456753b08d1f52e5488621f (MIT). Accessors load these
@@ -1643,23 +1677,27 @@ void setup() {
       LOG_ERR("MAIN", "Minimal network boot target failed; returning home");
       silentRestartAfterNetwork();
     }
+  } else if (bookMoveResumeBlocked) {
+    // Never resume the affected PDF while its path-keyed move is unresolved.
+    // Home can still render retained read-only products without preparing or saving.
+    activityManager.goHome();
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
              !APP_STATE.openEpubPath.empty()) {
     activityManager.goToReader(APP_STATE.openEpubPath, false, false, cleanImageBaseOnEntry);
   } else if (resume == BootResume::Silent) {
     // target == home (or reader with no open book): land on home — don't fall
     // through to the sleep-wake "resume reader" logic, which fires on stale
-    // openEpubPath + lastSleepFromReader from a prior session.
+    // open-book path + lastSleepFromReader from a prior session.
     activityManager.goHome(HomeMenuItem::NONE, true);
-  } else if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
+  } else if (APP_STATE.openBookPath().empty() || !APP_STATE.lastSleepFromReader ||
              mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
     // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
     // crashed (indicated by readerActivityLoadCount > 0)
     activityManager.goHome();
   } else {
-    // Clear app state to avoid getting into a boot loop if the epub doesn't load
-    const auto path = APP_STATE.openEpubPath;
-    APP_STATE.openEpubPath = "";
+    // Clear app state to avoid getting into a boot loop if the book doesn't load.
+    const auto path = APP_STATE.openBookPath();
+    APP_STATE.openBookPath().clear();
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
     activityManager.goToReader(path, false, allowFastInitialReaderRefresh);

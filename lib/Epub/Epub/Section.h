@@ -1,16 +1,20 @@
 #pragma once
+
+#include <HalStorage.h>
+#include <ReflowDocument.h>
+
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 
-#include "Epub.h"
 #include "EpubRenderMode.h"
 #include "ReaderRenderSpec.h"
 #include "SectionPageIndex.h"
 
 class Page;
 class GfxRenderer;
+class TextBlock;
 class ChapterHtmlSlimParser;
 class CssParser;
 
@@ -28,9 +32,8 @@ struct SectionBuildOptions {
 };
 
 class Section {
-  std::shared_ptr<Epub> epubOwner;
-  Epub* epub;
-  const int spineIndex;
+  std::shared_ptr<ReflowDocument> document;
+  const int sectionIndex;
   GfxRenderer& renderer;
   std::string filePath;
   HalFile file;
@@ -86,14 +89,23 @@ class Section {
   // Read a page already laid out by the in-progress build (page < build LUT size), from
   // the partially-written tmp .bin without disturbing the build's write cursor.
   std::unique_ptr<Page> loadPageDuringBuild(int page);
+  // PDF sections carry a word-index sidecar (.pwi) built alongside the page index.
+  struct PdfPageBuildContext;
+  bool usesPdfWordIndex() const;
+  static void completePdfPage(void* context, std::unique_ptr<Page> page, uint16_t paragraphIndex,
+                              uint16_t listItemIndex, uint32_t visibleTextOffset);
+  static bool finishPdfTextBlock(void* context, const Page* currentPage);
+  static bool beginPdfTextBlock(void* context, const char* anchor, size_t anchorLength);
+  static bool trackPdfTextLine(void* context, const TextBlock* line);
 
  public:
   uint16_t pageCount = 0;
   int currentPage = 0;
 
-  explicit Section(const std::shared_ptr<Epub>& epub, int spineIndex, GfxRenderer& renderer,
+  explicit Section(const std::shared_ptr<ReflowDocument>& document, int sectionIndex, GfxRenderer& renderer,
                    const char* cacheSuffix = "");
-  explicit Section(Epub& epub, int spineIndex, GfxRenderer& renderer, const char* cacheSuffix = "");
+  // Non-owning: the caller keeps `document` alive for the Section's lifetime.
+  explicit Section(ReflowDocument& document, int sectionIndex, GfxRenderer& renderer, const char* cacheSuffix = "");
   ~Section();
   bool loadSectionFile(const ReaderRenderSpec& spec);
   bool clearCache() const;
@@ -170,6 +182,14 @@ class Section {
 
   // Look up the running list-item index for the given rendered page.
   std::optional<uint16_t> getListItemIndexForPage(uint16_t page) const;
+
+  // PDF-only fixed-record semantic positions from the .pwi sidecar. EPUB sections never
+  // create or read it, so their cache bytes are unchanged.
+  std::optional<ReflowPageSemanticRange> getSemanticRangeForPage(uint16_t page);
+  std::optional<uint16_t> getPageForSemanticPosition(const char* blockAnchor, uint32_t blockWordOffset,
+                                                     uint32_t globalWordOrdinal);
+  std::optional<uint16_t> getPageForSemanticCursor(uint32_t wordCursor);
+  const std::string& getCacheFilePath() const { return filePath; }
 
   // Content coordinate recorded at the start of each rendered page. Available
   // for finalized sections and the readable prefix of incremental sections.

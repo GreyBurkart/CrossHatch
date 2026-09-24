@@ -3,6 +3,7 @@
 #include <FreeInkApp.h>
 #include <FreeInkUIGfxRenderer.h>
 #include <I18n.h>
+#include <ReflowDocument.h>
 
 #include <array>
 #include <atomic>
@@ -35,8 +36,11 @@ class EpubReaderMenuActivity final : public Activity {
       ReaderOptionsActivity::GlobalSettingsEditCallback beginGlobalSettingsEditCallback = nullptr,
       void* beginGlobalSettingsEditContext = nullptr, bool stablePageNumbersAvailable = false,
       ReaderOptionsActivity::GlobalSettingsEditCallback endGlobalSettingsEditCallback = nullptr,
-      void* endGlobalSettingsEditContext = nullptr, const char* dictionaryFontFamilyName = nullptr,
-      uint8_t dictionaryFontPointSize = 0, bool hasDictionaryFontOverride = false,
+      void* endGlobalSettingsEditContext = nullptr,
+      ReflowCapabilitySet documentCapabilities = ReflowCapability::ExternalProgressSync |
+                                                 ReflowCapability::NearbyProgressSync | ReflowCapability::SavedItems,
+      const char* dictionaryFontFamilyName = nullptr, uint8_t dictionaryFontPointSize = 0,
+      bool hasDictionaryFontOverride = false,
       ReaderOptionsActivity::DictionaryFontChangedCallback dictionaryFontChangedCallback = nullptr,
       void* dictionaryFontChangedContext = nullptr);
 
@@ -65,9 +69,9 @@ class EpubReaderMenuActivity final : public Activity {
   static constexpr size_t TOUCH_ICON_COUNT = MENU_TAB_COUNT + 1;
   using TabMenuItems = std::array<std::vector<MenuItem>, MENU_TAB_COUNT>;
 
-  static TabMenuItems buildMenuItems(bool hasFootnotes, bool hasBookmarks, bool hasClippings,
+  static TabMenuItems buildMenuItems(bool hasFootnotes, bool hasDictionary, bool hasBookmarks, bool hasClippings,
                                      bool isCurrentPageBookmarked, bool isBookCompleted, bool showReadingPaceReset,
-                                     bool hasDictionary);
+                                     ReflowCapabilitySet documentCapabilities);
   [[nodiscard]] const std::vector<MenuItem>& activeMenuItems() const;
   [[nodiscard]] size_t activeTabIndex() const { return static_cast<size_t>(activeTab); }
   void cycleActiveTab();

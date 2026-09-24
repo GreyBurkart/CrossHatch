@@ -20,18 +20,14 @@ struct Progress {
 };
 
 inline bool readProgressFile(const char* moduleName, const std::string& path, Progress& progress) {
-  if (!Storage.exists(path.c_str())) {
-    return false;
-  }
+  if (!Storage.exists(path.c_str())) return false;
 
-  FsFile f;
-  if (!Storage.openFileForRead(moduleName, path, f)) {
-    return false;
-  }
+  FsFile file;
+  if (!Storage.openFileForRead(moduleName, path, file)) return false;
 
   uint8_t data[10];
-  const int dataSize = f.read(data, sizeof(data));
-  f.close();
+  const int dataSize = file.read(data, sizeof(data));
+  file.close();
   if (dataSize != 4 && dataSize != 6 && dataSize != 10) {
     LOG_ERR(moduleName, "Progress file has unexpected size: %d", dataSize);
     return false;
@@ -58,17 +54,18 @@ inline bool readProgressFile(const char* moduleName, const std::string& path, Pr
 }
 
 inline bool loadProgress(const Epub& epub, Progress& progress, const char* moduleName = "ERS") {
-  const std::string progressPath = epub.getCachePath() + "/progress.bin";
-  if (readProgressFile(moduleName, progressPath, progress)) {
-    return true;
+  (void)moduleName;
+  ReflowReadingPosition position;
+  if (!epub.loadReadingPosition(position)) {
+    return false;
   }
-
-  const std::string backupPath = progressPath + ".bak";
-  if (readProgressFile(moduleName, backupPath, progress)) {
-    LOG_DBG("ERS", "Recovered progress from backup");
-    return true;
-  }
-  return false;
+  progress.spineIndex = position.sectionIndex;
+  progress.pageNumber = position.pageNumber;
+  progress.pageCount = position.pageCount;
+  progress.hasPageCount = position.hasPageCount;
+  progress.visibleTextOffset = position.visibleTextOffset;
+  progress.hasVisibleTextOffset = position.hasVisibleTextOffset;
+  return true;
 }
 
 // Persists reader progress for an EPUB to its cache directory. Returns true on success.

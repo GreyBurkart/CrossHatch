@@ -1,9 +1,11 @@
 #pragma once
 #include <Print.h>
+#include <ReflowDocument.h>
 
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -15,8 +17,7 @@ class ZipFile;
 class ZipFileStreamReader;
 class GfxRenderer;
 
-class Epub {
- private:
+class Epub : public ReflowDocument {
   // the ncx file (EPUB 2)
   std::string tocNcxItem;
   // the nav file (EPUB 3)
@@ -113,8 +114,17 @@ class Epub {
   };
 
   explicit Epub(std::string filepath, const std::string& cacheDir);
-  ~Epub() = default;
+  ~Epub() override = default;
+  ReflowDocumentFormat getFormat() const override;
+  const char* getStoreFormatKey() const override;
+  ReflowCapabilitySet getCapabilities() const override;
   static std::string cachePathForFilePath(const std::string& filepath, const std::string& cacheDir);
+  // Directory-delete replay already owns the source path. Build the two legacy
+  // cache filenames in bounded stack buffers so replay does not copy that path.
+  static bool clearCacheForFilePathNoPathAlloc(std::string_view filepath, const char* cacheDir);
+#if defined(CROSSINK_PRODUCTION_TEST_SEAMS)
+  static bool formatCachePathForTest(char* output, size_t capacity, const char* cacheDir, uint64_t hash);
+#endif
   // True when a metadata cache already exists for this book, i.e. load() will
   // hit the fast path instead of rebuilding. Cheap: no parsing, just a stat.
   static bool hasCache(const std::string& filepath, const std::string& cacheDir);
@@ -127,27 +137,27 @@ class Epub {
   OpenFailure getLastLoadFailure() const { return lastLoadFailure; }
   bool clearCache() const;
   void setupCacheDir() const;
-  const std::string& getCachePath() const;
-  const std::string& getPath() const;
-  const std::string& getTitle() const;
-  const std::string& getAuthor() const;
-  const std::string& getLanguage() const;
+  const std::string& getCachePath() const override;
+  const std::string& getPath() const override;
+  const std::string& getTitle() const override;
+  const std::string& getAuthor() const override;
+  const std::string& getLanguage() const override;
   // True when parsed EPUB metadata identifies a cover image. Requires load().
   bool hasCoverImage() const;
-  std::string getCoverBmpPath(bool cropped = false, bool imageLevels = false) const;
+  std::string getCoverBmpPath(bool cropped = false, bool imageLevels = false) const override;
   bool generateCoverBmp(bool cropped = false, const GfxRenderer* renderer = nullptr, int readerFontId = 0,
-                        bool imageLevels = false) const;
-  std::string getThumbBmpPath() const;
+                        bool imageLevels = false) const override;
+  std::string getThumbBmpPath() const override;
   // Deprecated compatibility wrapper; forwards to getThumbBmpPath(0, height).
   [[deprecated("use getThumbBmpPath(int width, int height)")]]
   std::string getThumbBmpPath(int height) const;
   // Returns the thumbnail cache path. width <= 0 derives the default 3:5
   // (width:height) thumbnail width from height; height <= 0 uses the default
   // thumbnail height.
-  std::string getThumbBmpPath(int width, int height) const;
+  std::string getThumbBmpPath(int width, int height) const override;
   // Returns a Minimal-style adaptive thumbnail path. Normal cover ratios fill
   // the requested box; unusual ratios are contained inside the box.
-  std::string getAdaptiveThumbBmpPath(int width, int height) const;
+  std::string getAdaptiveThumbBmpPath(int width, int height) const override;
   // Deprecated compatibility wrapper; forwards to generateThumbBmp(0, height).
   [[deprecated("use generateThumbBmp(int width, int height)")]]
   bool generateThumbBmp(int height, const GfxRenderer* renderer = nullptr, int readerFontId = 0) const;
@@ -155,18 +165,19 @@ class Epub {
   // (width:height) thumbnail width from height; height <= 0 uses the default
   // thumbnail height.
   // Returns false on missing cache/cover, unsupported image format, or conversion failure.
-  bool generateThumbBmp(int width, int height, const GfxRenderer* renderer = nullptr, int readerFontId = 0) const;
+  bool generateThumbBmp(int width, int height, const GfxRenderer* renderer = nullptr,
+                        int readerFontId = 0) const override;
   // Writes a thumbnail that can either crop-to-fill or contain unusual cover
   // ratios, depending on the source image dimensions.
   bool generateAdaptiveThumbBmp(int width, int height, const GfxRenderer* renderer = nullptr,
-                                int readerFontId = 0) const;
+                                int readerFontId = 0) const override;
   uint8_t* readItemContentsToBytes(const std::string& itemHref, size_t* size = nullptr,
                                    bool trailingNullByte = false) const;
   bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize,
                                 bool allowEarlyStop = false) const;
   bool extractItemToFile(const std::string& itemHref, const std::string& destPath, size_t chunkSize = 4096) const;
   bool getItemSize(const std::string& itemHref, size_t* size) const;
-  bool getOptimizerImageDimensions(const std::string& itemHref, uint16_t& width, uint16_t& height) const;
+  bool getOptimizerImageDimensions(const std::string& itemHref, uint16_t& width, uint16_t& height) const override;
   // Seeds the normal local cache from an exact optimizer sidecar, or streams a
   // bounded nearest-neighbour resize into that cache when the device differs.
   bool seedOptimizerImageCache(const std::string& itemHref, int expectedWidth, int expectedHeight,
@@ -186,11 +197,11 @@ class Epub {
   bool hasStablePageNumbers() const {
     return xLocationsLoaded && totalWords > 0 && wordsPerReferencePage > 0 && totalReferencePages > 0;
   }
-  float calculateSizeProgress(int currentSpineIndex, float currentSpineRead) const;
-  float calculateProgress(int currentSpineIndex, float currentSpineRead) const;
+  float calculateSizeProgress(int currentSpineIndex, float currentSpineRead) const override;
+  float calculateProgress(int currentSpineIndex, float currentSpineRead) const override;
   bool resolveLocationPercentToSpineProgress(int percent, int& spineIndex, float& spineProgress) const;
   bool resolveReferencePage(int currentSpineIndex, float currentSpineRead, uint32_t& currentPage,
-                            uint32_t& pageCount) const;
+                            uint32_t& pageCount) const override;
   bool resolveChapterGroupRange(int currentSpineIndex, int& firstSpineIndex, int& lastSpineIndex) const;
   bool hasChapterGroups() const { return locationChapterGroupCount > 0; }
   bool hasSourceSpineMap() const { return sourceSpineMapCount > 0; }
@@ -200,8 +211,36 @@ class Epub {
   bool findCurrentSpineForSource(int sourceIndex, uint8_t containerDepth, const char* childName,
                                  uint16_t sourceSiblingIndex, int& currentSpineIndex,
                                  uint16_t& currentSiblingIndex) const;
-  CssParser* getCssParser() const { return cssParser.get(); }
+  CssParser* getCssParser() const override { return cssParser.get(); }
   int resolveHrefToSpineIndex(const std::string& href) const;
+
+  bool getLocalSectionPath(int sectionIndex, ReflowResource& out) const override;
+  bool streamSection(int sectionIndex, Print& out, size_t chunkSize) const override;
+  bool resolveResource(int sectionIndex, const std::string& href, ReflowResource& out) const override;
+  bool streamResource(int sectionIndex, const std::string& href, Print& out, size_t chunkSize) const override;
+  bool getResourceSize(int sectionIndex, const std::string& href, size_t* size) const override;
+  bool probeResource(int sectionIndex, const std::string& href, Print& out, size_t chunkSize) const override;
+  bool extractResourceToFile(int sectionIndex, const std::string& href, const std::string& destPath) const override;
+
+  int getSectionCount() const override;
+  bool getSectionHref(int sectionIndex, std::string& href) const override;
+  ReflowSectionInfo getSectionInfo(int sectionIndex) const override;
+  bool getSectionSize(int sectionIndex, size_t* size) const override;
+  size_t getCumulativeSectionSize(int sectionIndex) const override;
+  size_t getDocumentSize() const override;
+  int getSectionIndexForTextReference() const override;
+
+  int getTocEntryCount() const override;
+  ReflowTocEntry getTocEntry(int tocIndex) const override;
+  int getSectionIndexForTocIndex(int tocIndex) const override;
+  int getTocIndexForSectionIndex(int sectionIndex) const override;
+  int resolveHrefToSectionIndex(const std::string& href) const override;
+
+  bool resolveProgressPercentToSection(int percent, int& sectionIndex, float& sectionProgress) const override;
+  bool hasStableReferencePages() const override;
+  uint32_t getTotalWordCount() const override;
+  bool loadReadingPosition(ReflowReadingPosition& position) const override;
+  bool saveReadingPosition(const ReflowReadingPosition& position) const override;
 
  private:
   std::string getCachedCoverImagePath(const std::string& coverImageHref) const;

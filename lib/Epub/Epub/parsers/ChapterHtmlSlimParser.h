@@ -23,8 +23,35 @@
 #include "Epub/tables/CompactTableLayout.h"
 
 class GfxRenderer;
-class Epub;
+class ReflowSectionSource;
+
+struct ChapterHtmlPaginationVtable {
+  void (*completePage)(void* context, std::unique_ptr<Page> page, uint16_t paragraphIndex, uint16_t listItemIndex,
+                       uint32_t visibleTextOffset) = nullptr;
+  bool (*finishTextBlock)(void* context, const Page* currentPage) = nullptr;
+  bool (*beginTextBlock)(void* context, const char* anchor, size_t anchorLength) = nullptr;
+  bool (*trackTextLine)(void* context, const TextBlock* line) = nullptr;
+};
+
+// PDF-only pagination hooks. The vtable is static/flash-resident and the parser
+// carries only these two pointers. Ordinary EPUB parsing leaves both null.
+struct ChapterHtmlPaginationHooks {
+  void* context = nullptr;
+  const ChapterHtmlPaginationVtable* vtable = nullptr;
+};
+
+static_assert(sizeof(ChapterHtmlPaginationHooks) == sizeof(void*) * 2,
+              "pagination hooks must remain a two-pointer non-owning view");
+
 #define MAX_WORD_SIZE 200
+
+#ifdef SIMULATOR
+enum class ChapterHtmlSlimParserSimulatorFault : uint8_t {
+  None,
+  LowMemoryAfterSourceOpen,
+  ParserBufferOom,
+};
+#endif
 
 class ChapterHtmlSlimParser {
  public:
@@ -33,14 +60,23 @@ class ChapterHtmlSlimParser {
  private:
   static constexpr uint8_t MAX_SIMPLE_TABLE_COLUMNS = 8;
   static constexpr uint16_t MAX_SIMPLE_TABLE_CELL_WORDS = 160;
+  static constexpr uint8_t TABLE_SEMANTIC_ANCHOR_BYTES = 10;
+  // Tables are streamed one row at a time. Retain anchors only for that row;
+  // the extra slot lets an over-wide row fall back without losing its active cell.
+  static constexpr uint16_t TABLE_SEMANTIC_ANCHOR_CAPACITY = MAX_SIMPLE_TABLE_COLUMNS + 1;
   static constexpr uint8_t TABLE_CELL_PADDING = 6;
   static constexpr size_t MAX_INLINE_STYLE_DEPTH = 64;
   static constexpr size_t MAX_BLOCK_STYLE_DEPTH = 16;
+#ifdef SIMULATOR
+  inline static ChapterHtmlSlimParserSimulatorFault simulatorFault_ = ChapterHtmlSlimParserSimulatorFault::None;
+#endif
 
-  Epub* epub;
+  ReflowSectionSource& sectionSource;
+  const int sectionIndex;
   const std::string& filepath;
   GfxRenderer& renderer;
   std::function<void(std::unique_ptr<Page>, uint16_t, uint16_t, uint32_t)> completePageFn;
+  ChapterHtmlPaginationHooks paginationHooks_;
   std::function<void()> popupFn;  // Popup callback
   int depth = 0;
   int skipUntilDepth = INT_MAX;
@@ -83,11 +119,16 @@ class ChapterHtmlSlimParser {
   CssParser* cssParser;
   bool embeddedStyle;
   uint8_t imageRendering;
+  bool preserveImagePathRoot_ = false;
   std::string contentBase;
   std::string imageBasePath;
+  bool shouldPreserveImagePathRoot() const {
+    return preserveImagePathRoot_ && !contentBase.empty() && contentBase.front() == '/';
+  }
   int imageCounter = 0;
   bool lowMemoryImageFallback = false;
   bool lowMemoryAbort = false;
+  bool paginationHookFailed = false;
   bool attemptedTextLayoutFontCacheRelease = false;
   EpubRenderMode renderMode = EpubRenderMode::CrossInkDefault;
   std::string previewAnchor;
@@ -162,9 +203,24 @@ class ChapterHtmlSlimParser {
   struct BufferedTable {
     BlockStyle blockStyle;
     std::vector<BufferedTableRow> rows;
+    // Null for EPUB. PDF allocates one 90-byte row anchor buffer and reuses it
+    // for the whole table, avoiding per-cell allocations and whole-table limits.
+    std::unique_ptr<char[]> paginationAnchors;
     uint16_t maxCols = 0;
     uint16_t totalCells = 0;
     bool unsupported = false;
+    char* paginationAnchorAt(const uint16_t cellIndex) {
+      return paginationAnchors && cellIndex < TABLE_SEMANTIC_ANCHOR_CAPACITY
+                 ? paginationAnchors.get() + static_cast<size_t>(cellIndex) * TABLE_SEMANTIC_ANCHOR_BYTES
+                 : nullptr;
+    }
+
+    const char* paginationAnchorAt(const uint16_t cellIndex) const {
+      return paginationAnchors && cellIndex < TABLE_SEMANTIC_ANCHOR_CAPACITY
+                 ? paginationAnchors.get() + static_cast<size_t>(cellIndex) * TABLE_SEMANTIC_ANCHOR_BYTES
+                 : nullptr;
+    }
+
     // When the whole-table reservation is unavailable, retain only the current
     // source row plus the render-ready rows that fit on the active page.
     bool streaming = false;
@@ -184,6 +240,7 @@ class ChapterHtmlSlimParser {
   int pendingListMarkerDepth = -1;
   bool currentTableCellIsHeader = false;
   uint8_t currentTableCellColSpan = 1;
+  bool currentTableCellSemanticDeferred = false;
   uint32_t currentTableCellVisibleOffset = 0;
   std::unique_ptr<BufferedTable> currentTableBuffer = nullptr;
   std::unique_ptr<CompactTableLayout> currentCompactTable = nullptr;
@@ -209,7 +266,6 @@ class ChapterHtmlSlimParser {
   uint16_t currentTextBlockListItemIndex = 0;
   uint16_t currentPageParagraphIndex = 0;
   uint16_t currentPageListItemIndex = 0;
-
   // Footnote link tracking
   bool insideFootnoteLink = false;
   int footnoteLinkDepth = -1;
@@ -240,6 +296,12 @@ class ChapterHtmlSlimParser {
   uint16_t textRunBytesBeforeLayoutLimit() const;
   void markCurrentPageFromCurrentTextBlock();
   void markCurrentPageFromCurrentElement();
+  bool finishPaginationTextBlock();
+  bool beginPaginationTextBlock();
+  bool beginPaginationTextBlock(const char* anchor, size_t anchorLength);
+  bool trackPaginationTextLine(const TextBlock& line);
+  bool usesSemanticLayout() const;
+  bool shouldRetainAnchor(const std::string& anchor) const;
   void setCurrentPageVisibleOffset(uint32_t offset);
   void completeCurrentPage();
   void makePages();
@@ -251,7 +313,7 @@ class ChapterHtmlSlimParser {
   void startPreviewAtAnchor();
   void stopPreviewIfPageLimitReached();
   bool usesSimpleCssLookup() const { return renderMode != EpubRenderMode::CrossInkDefault; }
-  bool flattensTables() const { return renderMode != EpubRenderMode::CrossInkDefault; }
+  bool flattensTables() const { return renderMode != EpubRenderMode::CrossInkDefault && !usesSemanticLayout(); }
   bool isLightMode() const { return renderMode == EpubRenderMode::Light; }
   bool honorsPublisherDecorations() const { return renderMode != EpubRenderMode::Light; }
   void pushCssAncestor(int depth, const char* tag, std::string_view classAttr);
@@ -285,18 +347,20 @@ class ChapterHtmlSlimParser {
 
  public:
   explicit ChapterHtmlSlimParser(
-      Epub& epub, const std::string& filepath, GfxRenderer& renderer, const int fontId, const float lineCompression,
-      const bool extraParagraphSpacing, const bool forceParagraphIndents, const uint8_t paragraphAlignment,
-      const uint16_t viewportWidth, const uint16_t viewportHeight, const bool hyphenationEnabled,
-      const bool focusReadingEnabled, const bool guideReadingEnabled, const uint8_t wordSpacing,
-      const std::function<void(std::unique_ptr<Page>, uint16_t, uint16_t, uint32_t)>& completePageFn,
-      const bool embeddedStyle, const std::string& contentBase, const std::string& imageBasePath,
-      const uint8_t imageRendering = 0, std::vector<std::string> tocAnchors = {},
-      const std::function<void()>& popupFn = nullptr, CssParser* cssParser = nullptr,
-      const EpubRenderMode renderMode = EpubRenderMode::CrossInkDefault, std::string previewAnchor = {},
-      const uint16_t previewMaxPages = 0)
+      ReflowSectionSource& sectionSource, int sectionIndex, const std::string& filepath, GfxRenderer& renderer,
+      const int fontId, const float lineCompression, const bool extraParagraphSpacing, const bool forceParagraphIndents,
+      const uint8_t paragraphAlignment, const uint16_t viewportWidth, const uint16_t viewportHeight,
+      const bool hyphenationEnabled, const bool focusReadingEnabled, const bool guideReadingEnabled,
+      const uint8_t wordSpacing,
+      std::function<void(std::unique_ptr<Page>, uint16_t, uint16_t, uint32_t)> completePageFn, const bool embeddedStyle,
+      const std::string& contentBase, const std::string& imageBasePath, const uint8_t imageRendering = 0,
+      std::vector<std::string> tocAnchors = {}, const std::function<void()>& popupFn = nullptr,
+      CssParser* cssParser = nullptr, const EpubRenderMode renderMode = EpubRenderMode::CrossInkDefault,
+      std::string previewAnchor = {}, const uint16_t previewMaxPages = 0,
+      const ChapterHtmlPaginationHooks paginationHooks = {}, const bool preserveImagePathRoot = false)
 
-      : epub(&epub),
+      : sectionSource(sectionSource),
+        sectionIndex(sectionIndex),
         filepath(filepath),
         renderer(renderer),
         fontId(fontId),
@@ -310,11 +374,13 @@ class ChapterHtmlSlimParser {
         focusReadingEnabled(focusReadingEnabled),
         guideReadingEnabled(guideReadingEnabled),
         wordSpacing(wordSpacing > 4 ? 4 : wordSpacing),
-        completePageFn(completePageFn),
+        completePageFn(std::move(completePageFn)),
+        paginationHooks_(paginationHooks),
         popupFn(popupFn),
         cssParser(cssParser),
         embeddedStyle(embeddedStyle),
         imageRendering(imageRendering),
+        preserveImagePathRoot_(preserveImagePathRoot),
         renderMode(renderMode),
         previewAnchor(std::move(previewAnchor)),
         previewMaxPages(previewMaxPages),
@@ -326,14 +392,16 @@ class ChapterHtmlSlimParser {
   bool parseAndBuildPages();
   bool beginParse();
   ParseStatus parseStep();
-  bool finishParse();  // flush the trailing page and tear down; returns true
-  void abortParse();   // tear down without flushing (error / abandon)
+  bool finishParse();
+  void abortParse();
   void releaseInputFile();
-
   void addLineToPage(std::shared_ptr<TextBlock> line, uint32_t visibleOffset);
   const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
   bool wasLowMemoryFallbackTriggered() const { return lowMemoryImageFallback; }
-  bool wasLowMemoryAbortTriggered() const { return lowMemoryAbort; }
+  bool wasLowMemoryAbortTriggered() const { return lowMemoryAbort && !paginationHookFailed; }
+#ifdef SIMULATOR
+  static void setSimulatorFault(const ChapterHtmlSlimParserSimulatorFault fault) { simulatorFault_ = fault; }
+#endif
 
   // Byte progress of the in-flight parse, used to estimate a still-building section's total page
   // count (a giant single-spine book never fully lays out, so its real count is unknown). Valid

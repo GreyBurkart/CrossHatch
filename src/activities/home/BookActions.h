@@ -1,11 +1,15 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "FileBrowserActionActivity.h"
 
 class GfxRenderer;
+namespace PdfDeleteUtils {
+class DirectoryDeleteSession;
+}
 
 namespace BookActions {
 
@@ -17,6 +21,9 @@ bool handleLibraryAction(FileBrowserAction action, const std::string& fullPath, 
 bool hasClearableBookCache(const std::string& path);
 bool canSendNearby(const std::string& path);
 void clearFileMetadata(const std::string& fullPath);
+bool clearDirectoryLegacyMetadataNoPathAlloc(std::string_view fullPath);
+bool deleteDirectoryPdfBookNoPathAlloc(PdfDeleteUtils::DirectoryDeleteSession& session, std::string_view fullPath);
+bool deletePdfBook(const std::string& fullPath);
 bool clearBookCache(const std::string& fullPath);
 bool deleteBookStats(const std::string& fullPath);
 bool resetBookReaderSettings(const std::string& fullPath);

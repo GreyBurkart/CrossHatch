@@ -8,6 +8,9 @@
 #include <string>
 #include <vector>
 
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+#include "RecentBookProgress.h"
+#endif
 #include "RecentBooksStore.h"
 #include "VirtualViews.h"
 #include "activities/Activity.h"
@@ -38,6 +41,9 @@ class RecentBooksActivity final : public Activity {
   VirtualViews::ScanStatus scanStatus;
   // Fixed list storage is reused across renders; no per-frame vector allocation.
   std::array<freeink::ui::ListItem, VirtualViews::MAX_BOOKS + 1> listItems{};
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  RecentBookProgress::PdfProductCache pdfProductCache;
+#endif
 
   freeink::ui::GfxRendererTarget uiTarget;  // must precede `app`: the app holds a reference to it
   UiApp app;

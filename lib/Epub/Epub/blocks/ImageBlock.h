@@ -1,10 +1,26 @@
 #pragma once
 #include <HalStorage.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 
 #include "Block.h"
+
+// One per PDF reader session: a reusable row buffer and path scratch for drawing
+// PDF pixel caches without per-image heap allocation.
+struct PdfPixelCacheRenderWorkspace {
+  static constexpr size_t READ_BUFFER_BYTES = 4096;
+  static constexpr size_t PATH_BYTES = 160;
+
+  alignas(uint32_t) uint8_t readBuffer[READ_BUFFER_BYTES] = {};
+  char path[PATH_BYTES] = {};
+  bool inUse = false;
+};
+
+static_assert(sizeof(PdfPixelCacheRenderWorkspace) == 4260,
+              "PDF pixel-cache workspace must retain its bounded aligned layout");
 
 class ImageBlock final : public Block {
  public:
@@ -33,7 +49,8 @@ class ImageBlock final : public Block {
   BlockType getType() override { return IMAGE_BLOCK; }
   bool isEmpty() override { return false; }
 
-  void render(GfxRenderer& renderer, const int x, const int y, const bool foregroundBlack);
+  void render(GfxRenderer& renderer, int x, int y, bool foregroundBlack);
+  void render(GfxRenderer& renderer, int x, int y, bool foregroundBlack, PdfPixelCacheRenderWorkspace* pdfWorkspace);
   bool serialize(FsFile& file);
   static std::unique_ptr<ImageBlock> deserialize(FsFile& file);
 

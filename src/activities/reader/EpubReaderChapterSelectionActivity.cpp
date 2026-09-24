@@ -19,25 +19,25 @@ constexpr fui::ActionId ACTION_ROW = 1;
 
 EpubReaderChapterSelectionActivity::EpubReaderChapterSelectionActivity(GfxRenderer& renderer,
                                                                        MappedInputManager& mappedInput,
-                                                                       const std::shared_ptr<Epub>& epub,
+                                                                       const std::shared_ptr<ReflowDocument>& document,
                                                                        const std::string& epubPath,
                                                                        const int currentSpineIndex)
     : Activity("EpubReaderChapterSelection", renderer, mappedInput),
-      epub(epub),
+      document(document),
       epubPath(epubPath),
       currentSpineIndex(currentSpineIndex),
       uiTarget(makeUiTarget(renderer)),
       app(uiTarget, uiTarget.deviceContext()) {}
 
-int EpubReaderChapterSelectionActivity::getTotalItems() const { return epub->getTocItemsCount(); }
+int EpubReaderChapterSelectionActivity::getTotalItems() const { return document->getTocEntryCount(); }
 
 void EpubReaderChapterSelectionActivity::onEnter() {
   Activity::onEnter();
   mappedInput.setReaderTouchscreenOverride(true);
 
-  // epub is a required collaborator: the caller dereferences it before constructing
+  // document is a required collaborator: the caller dereferences it before constructing
   // this activity, and loop()/render() use it unguarded on every frame.
-  selectorIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
+  selectorIndex = document->getTocIndexForSectionIndex(currentSpineIndex);
   if (selectorIndex < 0) selectorIndex = 0;
   topIndex = 0;
   visibleRows = 1;
@@ -55,13 +55,13 @@ void EpubReaderChapterSelectionActivity::onExit() {
 }
 
 void EpubReaderChapterSelectionActivity::selectChapter() {
-  const auto tocItem = epub->getTocItem(selectorIndex);
-  if (tocItem.spineIndex < 0) {
+  const auto tocItem = document->getTocEntry(selectorIndex);
+  if (tocItem.sectionIndex < 0) {
     ActivityResult result;
     result.isCancelled = true;
     setResult(std::move(result));
   } else {
-    setResult(ChapterResult{tocItem.spineIndex, tocItem.anchor});
+    setResult(ChapterResult{tocItem.sectionIndex, tocItem.anchor});
   }
   finish();
 }
@@ -153,7 +153,7 @@ void EpubReaderChapterSelectionActivity::buildChapterScreen(UiApp::ScreenType& s
   const size_t drawCount =
       std::min({static_cast<size_t>(visibleRows), CHAPTER_WINDOW_SIZE, static_cast<size_t>(totalItems - topIndex)});
   for (size_t i = 0; i < drawCount; ++i) {
-    const auto item = epub->getTocItem(topIndex + static_cast<int>(i));
+    const auto item = document->getTocEntry(topIndex + static_cast<int>(i));
     const size_t indent = item.level > 0 ? static_cast<size_t>(item.level - 1) * 2 : 0;
     labelWindow[i].assign(indent, ' ');
     labelWindow[i] += item.title;

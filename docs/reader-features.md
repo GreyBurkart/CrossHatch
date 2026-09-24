@@ -120,6 +120,22 @@ For books that are slow to index or fail because of complex publisher styling,
 see [EPUB Indexing Methods](./epub-indexing.md) and
 [EPUB Render Modes](./epub-render-modes.md).
 
+## Reflowable PDF Reading
+
+Supported PDFs open as reflowable books rather than fixed page images. CrossInk
+extracts readable content on the device, then lays it out with the selected
+reader font, size, margins, spacing, orientation, and hyphenation.
+
+PDF outlines, resolvable internal links, contents and index text, publisher page
+labels, meaningful supported raster images, word-based progress, bookmarks, and
+clippings remain connected to the reading flow. The first open prepares a safe,
+resumable cache; later opens normally reuse it.
+
+PDFs need selectable text or a usable OCR text layer. CrossInk does not decrypt
+password-protected files, run OCR, or display fixed pages with zoom and pan.
+See [PDF Support](./pdf-support.md) for supported document and image limits,
+first-open behavior, and recovery help.
+
 ## Focus Reading
 
 Focus Reading is a reading aid that bolds the first portion of each word,
@@ -271,7 +287,7 @@ Use **Reset Reading Pace** if the estimate was trained by unusual reading behavi
 
 ## Bookmarks
 
-CrossInk supports EPUB bookmarks from the reader.
+CrossInk supports bookmarks in EPUB and supported PDF books from the reader.
 
 You can:
 
@@ -283,7 +299,7 @@ You can:
 
 ## Clippings And Highlights
 
-CrossInk supports EPUB text clippings from the reader. Use **Create Clipping**
+CrossInk supports text clippings in EPUB and supported PDF books. Use **Create Clipping**
 from the reader menu or a configured shortcut, select text, and save it.
 
 On button devices, move the cursor with the direction buttons, press **Select**

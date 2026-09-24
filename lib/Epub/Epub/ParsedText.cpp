@@ -33,7 +33,12 @@ constexpr char GUIDE_DOT_UTF8[] = "\xc2\xb7";
 constexpr uint32_t GUIDE_DOT_CODEPOINT = 0x00B7;
 constexpr size_t FOCUS_READING_PERCENT = 43;
 constexpr size_t LAYOUT_ARENA_SLAB_BYTES = 4096;
+constexpr size_t PDF_LAYOUT_ARENA_SLAB_BYTES = 1024;
 constexpr size_t INITIAL_TOKEN_VECTOR_RESERVE = 16;
+// The PDF parser bounds its active window so the string-object array never
+// needs more than 384 entries (9 KiB on ESP32). Text bytes remain owned by the
+// strings and the unfinished final line is carried into the next layout pass.
+constexpr size_t PDF_LAYOUT_TOKEN_VECTOR_RESERVE = 384;
 
 bool mayContainRtlBytes(const char* str) {
   for (const auto* p = reinterpret_cast<const unsigned char*>(str); *p; ++p) {
@@ -470,6 +475,11 @@ void ParsedText::reserveTokenCapacity(const size_t additionalTokens) {
   }
 
   size_t newCapacity = wordStyles.capacity() == 0 ? INITIAL_TOKEN_VECTOR_RESERVE : wordStyles.capacity() * 2;
+  if (boundedTokenGrowth && wordStyles.capacity() == 32 && requiredSize <= PDF_LAYOUT_TOKEN_VECTOR_RESERVE) {
+    // Avoid a late contiguous growth allocation after the PDF session, font,
+    // page, and semantic sidecar state have fragmented the small device heap.
+    newCapacity = PDF_LAYOUT_TOKEN_VECTOR_RESERVE;
+  }
   if (newCapacity < requiredSize) {
     newCapacity = requiredSize;
   }
@@ -770,17 +780,20 @@ int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer
 }
 
 // Consumes data to minimize memory usage
-bool ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
-                                       const std::function<void(std::shared_ptr<TextBlock>, uint32_t)>& processLine,
-                                       const bool includeLastLine) {
+// The word-tracking policy is selected once per layout pass so the normal EPUB
+// word/line loops contain no PDF-only branch.
+template <bool SemanticWordTracking>
+bool ParsedText::layoutAndExtractLinesImpl(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
+                                           const std::function<void(std::shared_ptr<TextBlock>, uint32_t)>& processLine,
+                                           const bool includeLastLine) {
   if (words.empty()) {
     return true;
   }
 
   Arena layoutArena(psramHeapAvailable() ? ArenaBacking::PsramPreferred : ArenaBacking::Default);
-  if (!layoutArena.init(LAYOUT_ARENA_SLAB_BYTES)) {
-    LOG_ERR("PTX", "Failed to allocate layout scratch arena (%u bytes)",
-            static_cast<unsigned>(LAYOUT_ARENA_SLAB_BYTES));
+  constexpr size_t layoutArenaSlabBytes = SemanticWordTracking ? PDF_LAYOUT_ARENA_SLAB_BYTES : LAYOUT_ARENA_SLAB_BYTES;
+  if (!layoutArena.init(layoutArenaSlabBytes)) {
+    LOG_ERR("PTX", "Failed to allocate layout scratch arena (%u bytes)", static_cast<unsigned>(layoutArenaSlabBytes));
     return false;
   }
 
@@ -841,14 +854,15 @@ bool ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   bool breaksOk = false;
   if (hyphenationEnabled) {
     // Use greedy layout that can split words mid-loop when a hyphenated prefix fits.
-    breaksOk = computeHyphenatedLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore,
-                                           lineBreakIndices);
+    breaksOk = computeHyphenatedLineBreaks<SemanticWordTracking>(renderer, fontId, pageWidth, wordWidths, wordContinues,
+                                                                 wordNoSpaceBefore, lineBreakIndices);
     if (breaksOk) {
       breaksOk = calculateGapMetrics(naturalGaps, gapSlots, renderer, fontId);
     }
   } else {
-    breaksOk = computeLineBreaks(layoutArena, renderer, fontId, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore,
-                                 naturalGaps, gapSlots, lineBreakIndices);
+    breaksOk =
+        computeLineBreaks<SemanticWordTracking>(layoutArena, renderer, fontId, pageWidth, wordWidths, wordContinues,
+                                                wordNoSpaceBefore, naturalGaps, gapSlots, lineBreakIndices);
   }
   if (!breaksOk || lineBreakIndices.empty()) {
     return false;
@@ -856,8 +870,8 @@ bool ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   const size_t lineCount = includeLastLine ? lineBreakIndices.size() : lineBreakIndices.size() - 1;
 
   for (size_t i = 0; i < lineCount; ++i) {
-    if (!extractLine(layoutArena, i, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore, naturalGaps, gapSlots,
-                     lineBreakIndices, processLine, renderer, fontId)) {
+    if (!extractLine<SemanticWordTracking>(layoutArena, i, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore,
+                                           naturalGaps, gapSlots, lineBreakIndices, processLine, renderer, fontId)) {
       return false;
     }
   }
@@ -886,14 +900,25 @@ bool ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   return true;
 }
 
+bool ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
+                                       const std::function<void(std::shared_ptr<TextBlock>, uint32_t)>& processLine,
+                                       const bool includeLastLine, const bool semanticWordTracking) {
+  if (semanticWordTracking) {
+    return layoutAndExtractLinesImpl<true>(renderer, fontId, viewportWidth, processLine, includeLastLine);
+  }
+  return layoutAndExtractLinesImpl<false>(renderer, fontId, viewportWidth, processLine, includeLastLine);
+}
+
 bool ParsedText::layoutAndExtractLinesPreservingSource(
     const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
-    const std::function<void(std::shared_ptr<TextBlock>)>& processLine, const bool allowCharacterBreaks) const {
+    const std::function<void(std::shared_ptr<TextBlock>)>& processLine, const bool allowCharacterBreaks,
+    const bool semanticWordTracking) const {
   ParsedText layoutProbe(*this);
   layoutProbe.allowCharacterBreaks_ = allowCharacterBreaks;
   return layoutProbe.layoutAndExtractLines(
       renderer, fontId, viewportWidth,
-      [&processLine](std::shared_ptr<TextBlock> line, const uint32_t) { processLine(std::move(line)); });
+      [&processLine](std::shared_ptr<TextBlock> line, const uint32_t) { processLine(std::move(line)); }, true,
+      semanticWordTracking);
 }
 
 int ParsedText::calculateRubyExtraStartOffset(const size_t wordIdx, const size_t maxWordIdx,
@@ -1078,6 +1103,7 @@ bool ParsedText::calculateGapMetrics(ArenaVector<int16_t>& naturalGaps, ArenaVec
   return true;
 }
 
+template <bool SemanticWordTracking>
 bool ParsedText::computeLineBreaks(Arena& scratchArena, const GfxRenderer& renderer, const int fontId,
                                    const int pageWidth, ArenaVector<uint16_t>& wordWidths,
                                    std::vector<bool>& continuesVec, std::vector<bool>& noSpaceBeforeVec,
@@ -1098,7 +1124,8 @@ bool ParsedText::computeLineBreaks(Arena& scratchArena, const GfxRenderer& rende
     // First word needs to fit in reduced width if there's an indent
     const int effectiveWidth = i == 0 ? pageWidth - firstLineIndent : pageWidth;
     while (wordWidths[i] > effectiveWidth) {
-      if (!hyphenateWordAtIndex(i, effectiveWidth, renderer, fontId, wordWidths, /*allowFallbackBreaks=*/true)) {
+      if (!hyphenateWordAtIndex<SemanticWordTracking>(i, effectiveWidth, renderer, fontId, wordWidths,
+                                                      /*allowFallbackBreaks=*/true)) {
         break;
       }
     }
@@ -1214,6 +1241,7 @@ bool ParsedText::computeLineBreaks(Arena& scratchArena, const GfxRenderer& rende
 }
 
 // Builds break indices while opportunistically splitting the word that would overflow the current line.
+template <bool SemanticWordTracking>
 bool ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& renderer, const int fontId, const int pageWidth,
                                              ArenaVector<uint16_t>& wordWidths, std::vector<bool>& continuesVec,
                                              std::vector<bool>& noSpaceBeforeVec,
@@ -1253,8 +1281,8 @@ bool ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& renderer, const 
       const int availableWidth = effectivePageWidth - lineWidth - spacing;
       const bool allowFallbackBreaks = isFirstWord;  // Only for first word on line
 
-      if (availableWidth > 0 &&
-          hyphenateWordAtIndex(currentIndex, availableWidth, renderer, fontId, wordWidths, allowFallbackBreaks)) {
+      if (availableWidth > 0 && hyphenateWordAtIndex<SemanticWordTracking>(currentIndex, availableWidth, renderer,
+                                                                           fontId, wordWidths, allowFallbackBreaks)) {
         // Prefix now fits; append it to this line and move to next line
         lineWidth += spacing + wordWidths[currentIndex];
         ++currentIndex;
@@ -1287,6 +1315,7 @@ bool ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& renderer, const 
 
 // Splits words[wordIndex] into prefix (adding a hyphen only when needed) and remainder when a legal breakpoint fits the
 // available width.
+template <bool SemanticWordTracking>
 bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availableWidth, const GfxRenderer& renderer,
                                       const int fontId, ArenaVector<uint16_t>& wordWidths,
                                       const bool allowFallbackBreaks) {
@@ -1299,14 +1328,15 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   const auto style = wordStyles[wordIndex];
 
   if (allowFallbackBreaks && isPathologicalUnbrokenToken(word)) {
-    return splitTokenAtCodepointBoundary(wordIndex, availableWidth, renderer, fontId, wordWidths);
+    return splitTokenAtCodepointBoundary<SemanticWordTracking>(wordIndex, availableWidth, renderer, fontId, wordWidths);
   }
 
   // Collect candidate breakpoints (byte offsets and hyphen requirements).
   auto breakInfos = Hyphenator::breakOffsets(word, allowFallbackBreaks);
   if (breakInfos.empty()) {
     if (allowFallbackBreaks && allowCharacterBreaks_) {
-      return splitTokenAtCodepointBoundary(wordIndex, availableWidth, renderer, fontId, wordWidths);
+      return splitTokenAtCodepointBoundary<SemanticWordTracking>(wordIndex, availableWidth, renderer, fontId,
+                                                                 wordWidths);
     }
     return false;
   }
@@ -1341,7 +1371,8 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
 
   if (chosenWidth < 0) {
     if (allowFallbackBreaks && allowCharacterBreaks_) {
-      return splitTokenAtCodepointBoundary(wordIndex, availableWidth, renderer, fontId, wordWidths);
+      return splitTokenAtCodepointBoundary<SemanticWordTracking>(wordIndex, availableWidth, renderer, fontId,
+                                                                 wordWidths);
     }
     // No hyphenation point produced a prefix that fits in the remaining space.
     return false;
@@ -1375,6 +1406,11 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   wordFocusBoundary.insert(wordFocusBoundary.begin() + wordIndex + 1, remainderFocus.boundary);
   wordGuideDotBefore.insert(wordGuideDotBefore.begin() + wordIndex + 1, false);
   wordBackgroundBlack[wordIndex + 1] &= static_cast<uint8_t>(~TextBlock::WORD_FLAG_INSERTED_HYPHEN);
+  if constexpr (SemanticWordTracking) {
+    // PDF pages carry no EPUB link IDs; mark the remainder as part of the same source word.
+    wordBackgroundBlack[wordIndex + 1] &= TextBlock::WORD_FLAG_BACKGROUND_BLACK;
+    wordBackgroundBlack[wordIndex + 1] |= TextBlock::WORD_FLAG_SEMANTIC_SPLIT_CONTINUATION;
+  }
   if (wordIndex + 1 <= rubyTexts.size()) {
     rubyTexts.insert(rubyTexts.begin() + wordIndex + 1, "");
   }
@@ -1416,6 +1452,7 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   return true;
 }
 
+template <bool SemanticWordTracking>
 bool ParsedText::splitTokenAtCodepointBoundary(const size_t wordIndex, const int availableWidth,
                                                const GfxRenderer& renderer, const int fontId,
                                                ArenaVector<uint16_t>& wordWidths) {
@@ -1486,6 +1523,10 @@ bool ParsedText::splitTokenAtCodepointBoundary(const size_t wordIndex, const int
   wordFocusBoundary.insert(wordFocusBoundary.begin() + wordIndex + 1, remainderFocus.boundary);
   wordGuideDotBefore.insert(wordGuideDotBefore.begin() + wordIndex + 1, false);
   wordBackgroundBlack[wordIndex + 1] &= static_cast<uint8_t>(~TextBlock::WORD_FLAG_INSERTED_HYPHEN);
+  if constexpr (SemanticWordTracking) {
+    wordBackgroundBlack[wordIndex + 1] &= TextBlock::WORD_FLAG_BACKGROUND_BLACK;
+    wordBackgroundBlack[wordIndex + 1] |= TextBlock::WORD_FLAG_SEMANTIC_SPLIT_CONTINUATION;
+  }
   wordContinues.insert(wordContinues.begin() + wordIndex + 1, false);
   wordNoSpaceBefore.insert(wordNoSpaceBefore.begin() + wordIndex + 1, true);
 
@@ -1501,6 +1542,7 @@ bool ParsedText::splitTokenAtCodepointBoundary(const size_t wordIndex, const int
   return true;
 }
 
+template <bool SemanticWordTracking>
 bool ParsedText::extractLine(Arena& scratchArena, const size_t breakIndex, const int pageWidth,
                              const ArenaVector<uint16_t>& wordWidths, const std::vector<bool>& continuesVec,
                              const std::vector<bool>& noSpaceBeforeVec, const ArenaVector<int16_t>& naturalGaps,
@@ -1552,7 +1594,21 @@ bool ParsedText::extractLine(Arena& scratchArena, const size_t breakIndex, const
       lineFocusBoundary.back() = 0;
     }
     lineGuideDotBefore.push_back(i > 0 && wordGuideDotBefore[sourceIndex]);
-    lineBackgroundBlack.push_back(wordBackgroundBlack[sourceIndex]);
+    if constexpr (SemanticWordTracking) {
+      // PDF semantic flags share the upper flag bits with EPUB link IDs.
+      // Semantic layout uses PDF anchors/navigation instead of Page footnote
+      // IDs, so strip the EPUB-only bits before recording join/split state.
+      uint8_t wordFlags = static_cast<uint8_t>(
+          wordBackgroundBlack[sourceIndex] &
+          (TextBlock::WORD_FLAG_BACKGROUND_BLACK | TextBlock::WORD_FLAG_INSERTED_HYPHEN |
+           TextBlock::WORD_FLAG_SEMANTIC_ATTACHES | TextBlock::WORD_FLAG_SEMANTIC_SPLIT_CONTINUATION));
+      if (continuesVec[sourceIndex]) {
+        wordFlags |= TextBlock::WORD_FLAG_SEMANTIC_ATTACHES;
+      }
+      lineBackgroundBlack.push_back(wordFlags);
+    } else {
+      lineBackgroundBlack.push_back(wordBackgroundBlack[sourceIndex]);
+    }
   }
 
   // Calculate total word width, count spacing slots, and accumulate natural gaps.
@@ -1629,7 +1685,10 @@ bool ParsedText::extractLine(Arena& scratchArena, const size_t breakIndex, const
         return false;
       }
       reorderedFocusBoundaryScratch.push_back(lineFocusBoundary[src]);
-      reorderedBackgroundBlackScratch.push_back(lineBackgroundBlack[src]);
+      uint8_t reorderedFlags = lineBackgroundBlack[src];
+      if constexpr (SemanticWordTracking) {
+        reorderedFlags &= static_cast<uint8_t>(~TextBlock::WORD_FLAG_SEMANTIC_ATTACHES);
+      }
       if (!lineRubyTexts.empty()) reorderedRubyTexts.push_back(std::move(lineRubyTexts[src]));
 
       bool continues = false;
@@ -1648,6 +1707,12 @@ bool ParsedText::extractLine(Arena& scratchArena, const size_t breakIndex, const
 
         guideDotBefore = forwardAdjacent && lineGuideDotBefore[currSrc];
       }
+      if constexpr (SemanticWordTracking) {
+        if (continues) {
+          reorderedFlags |= TextBlock::WORD_FLAG_SEMANTIC_ATTACHES;
+        }
+      }
+      reorderedBackgroundBlackScratch.push_back(reorderedFlags);
       reorderedContinuesScratch.push_back(continues);
       reorderedNoSpaceBeforeScratch.push_back(!continues && noSpaceBeforeVec[lastBreakAt + src]);
       reorderedGuideDotBeforeScratch.push_back(!continues && guideDotBefore);

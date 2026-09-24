@@ -23,6 +23,8 @@ class CrossPointState : public PersistableStore<CrossPointState>, public Documen
   static constexpr uint8_t BOOT_RECENT_COUNT = 16;
 
   std::string openEpubPath;
+  std::string& openBookPath() noexcept { return openEpubPath; }
+  const std::string& openBookPath() const noexcept { return openEpubPath; }
   std::string favoriteSleepImagePath;
   std::string preferredSleepFolderPath;
   uint16_t recentSleepImages[SLEEP_RECENT_COUNT] = {};  // circular buffer of recent wallpaper indices
@@ -61,6 +63,8 @@ class CrossPointState : public PersistableStore<CrossPointState>, public Documen
   ~CrossPointState() = default;
 
   bool saveToFile() const;
+  bool activateOpenPathMigration(const std::string& oldPath, const std::string& newPath);
+  bool verifyPersistedOpenPathMigration(const std::string& oldPath, const std::string& newPath) const;
 
   bool loadFromFile();
   static const char* getFilePath() { return "/.crosspoint/state.json"; }

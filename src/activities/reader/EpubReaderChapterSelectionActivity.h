@@ -1,7 +1,7 @@
 #pragma once
-#include <Epub.h>
 #include <FreeInkApp.h>
 #include <FreeInkUIGfxRenderer.h>
+#include <ReflowDocument.h>
 
 #include <array>
 #include <atomic>
@@ -15,7 +15,7 @@ class EpubReaderChapterSelectionActivity final : public Activity {
   using UiApp = freeink::ui::FreeInkApp<20, 4>;
   static constexpr size_t CHAPTER_WINDOW_SIZE = 20;
 
-  std::shared_ptr<Epub> epub;
+  std::shared_ptr<ReflowDocument> document;
   std::string epubPath;
   ButtonNavigator buttonNavigator;
   int currentSpineIndex = 0;
@@ -39,7 +39,7 @@ class EpubReaderChapterSelectionActivity final : public Activity {
 
  public:
   EpubReaderChapterSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                     const std::shared_ptr<Epub>& epub, const std::string& epubPath,
+                                     const std::shared_ptr<ReflowDocument>& document, const std::string& epubPath,
                                      int currentSpineIndex);
   void onEnter() override;
   void onExit() override;

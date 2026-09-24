@@ -18,9 +18,12 @@ constexpr fui::ActionId ACTION_ROW = 1;
 }  // namespace
 
 EpubReaderBookmarkListActivity::EpubReaderBookmarkListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                                               const std::vector<Bookmark>& bookmarks)
+                                                               const std::vector<Bookmark>& bookmarks,
+                                                               DeleteCallback deleteCallback, void* deleteContext)
     : Activity("EpubReaderBookmarkList", renderer, mappedInput),
       bookmarks(bookmarks),
+      deleteCallback(deleteCallback),
+      deleteContext(deleteContext),
       uiTarget(makeUiTarget(renderer)),
       app(uiTarget, uiTarget.deviceContext()) {}
 
@@ -40,8 +43,14 @@ void EpubReaderBookmarkListActivity::onExit() { Activity::onExit(); }
 
 void EpubReaderBookmarkListActivity::deleteSelectedBookmark() {
   if (bookmarks.empty() || selectedIndex < 0 || selectedIndex >= static_cast<int>(bookmarks.size())) return;
-  if (!BOOKMARKS.removeBookmarkAt(static_cast<size_t>(selectedIndex))) return;
-  bookmarks = BOOKMARKS.getBookmarks();
+
+  if (deleteCallback == nullptr) {
+    if (!BOOKMARKS.removeBookmarkAt(static_cast<size_t>(selectedIndex))) return;
+    bookmarks = BOOKMARKS.getBookmarks();
+  } else {
+    if (!deleteCallback(deleteContext, bookmarks[selectedIndex].paragraphIndex)) return;
+    bookmarks.erase(bookmarks.begin() + selectedIndex);
+  }
   if (bookmarks.empty())
     selectedIndex = 0;
   else if (selectedIndex >= static_cast<int>(bookmarks.size()))

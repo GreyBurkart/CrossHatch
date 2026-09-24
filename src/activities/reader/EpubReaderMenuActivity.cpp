@@ -14,6 +14,7 @@
 #include "EpubReaderClippingListActivity.h"
 #include "MappedInputManager.h"
 #include "ReaderUtils.h"
+#include "ReflowCapabilityPolicy.h"
 #include "components/TouchHeaderBackButton.h"
 #include "components/TouchRegistry.h"
 #include "components/UITheme.h"
@@ -194,12 +195,13 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(
     void* saveGlobalSettingsContext, ReaderOptionsActivity::GlobalSettingsEditCallback beginGlobalSettingsEditCallback,
     void* beginGlobalSettingsEditContext, const bool stablePageNumbersAvailable,
     ReaderOptionsActivity::GlobalSettingsEditCallback endGlobalSettingsEditCallback, void* endGlobalSettingsEditContext,
-    const char* dictionaryFontFamilyName, const uint8_t dictionaryFontPointSize, const bool hasDictionaryFontOverride,
+    const ReflowCapabilitySet documentCapabilities, const char* dictionaryFontFamilyName,
+    const uint8_t dictionaryFontPointSize, const bool hasDictionaryFontOverride,
     ReaderOptionsActivity::DictionaryFontChangedCallback dictionaryFontChangedCallback,
     void* dictionaryFontChangedContext)
     : Activity("EpubReaderMenu", renderer, mappedInput),
-      menuItems(buildMenuItems(hasFootnotes, hasBookmarks, hasClippings, isCurrentPageBookmarked, isBookCompleted,
-                               showReadingPaceReset, hasDictionary)),
+      menuItems(buildMenuItems(hasFootnotes, hasDictionary, hasBookmarks, hasClippings, isCurrentPageBookmarked,
+                               isBookCompleted, showReadingPaceReset, documentCapabilities)),
       title(title),
       pendingOrientation(currentOrientation),
       currentPage(currentPage),
@@ -228,12 +230,19 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(
 }
 
 EpubReaderMenuActivity::TabMenuItems EpubReaderMenuActivity::buildMenuItems(
-    bool hasFootnotes, bool hasBookmarks, bool hasClippings, bool isCurrentPageBookmarked, bool isBookCompleted,
-    bool showReadingPaceReset, bool hasDictionary) {
+    bool hasFootnotes, bool hasDictionary, bool hasBookmarks, bool hasClippings, bool isCurrentPageBookmarked,
+    bool isBookCompleted, bool showReadingPaceReset, ReflowCapabilitySet documentCapabilities) {
   TabMenuItems items;
   auto& mainItems = items[MAIN_TAB_INDEX];
   auto& bookmarkItems = items[BOOKMARKS_TAB_INDEX];
   auto& settingsItems = items[SETTINGS_TAB_INDEX];
+
+  // PDF reflow documents do not support progress sync; saved items are gated
+  // the same way so the menu never offers an action the document rejects.
+  const bool showExternalSync =
+      reflowSupportsMenuAction(documentCapabilities, ReflowReaderSyncAction::ExternalProgress);
+  const bool showNearbySync = reflowSupportsMenuAction(documentCapabilities, ReflowReaderSyncAction::NearbyProgress);
+  const bool showSavedItems = reflowSupportsSavedItems(documentCapabilities);
 
   mainItems.reserve(12 + (hasFootnotes ? 1u : 0u) + (hasDictionary ? 2u : 0u));
   bookmarkItems.reserve(9 + (hasBookmarks ? 2u : 0u) + (hasClippings ? 1u : 0u));
@@ -255,19 +264,26 @@ EpubReaderMenuActivity::TabMenuItems EpubReaderMenuActivity::buildMenuItems(
                                                         : StrId::STR_SWITCH_TO_DOC_B});
   mainItems.push_back({MenuAction::SET_DOCUMENT_A, StrId::STR_SET_DOC_A});
   mainItems.push_back({MenuAction::SET_DOCUMENT_B, StrId::STR_SET_DOC_B});
-  bookmarkItems.push_back({MenuAction::SAVE_CLIPPING, StrId::STR_SAVE_CLIPPING});
-  if (hasClippings) {
-    bookmarkItems.push_back({MenuAction::VIEW_CLIPPINGS, StrId::STR_VIEW_CLIPPINGS});
+  if (showSavedItems) {
+    bookmarkItems.push_back({MenuAction::SAVE_CLIPPING, StrId::STR_SAVE_CLIPPING});
+    if (hasClippings) {
+      bookmarkItems.push_back({MenuAction::VIEW_CLIPPINGS, StrId::STR_VIEW_CLIPPINGS});
+    }
+    bookmarkItems.push_back(
+        {MenuAction::BOOKMARK_TOGGLE, isCurrentPageBookmarked ? StrId::STR_REMOVE_BOOKMARK : StrId::STR_ADD_BOOKMARK});
+    if (hasBookmarks) {
+      bookmarkItems.push_back({MenuAction::VIEW_BOOKMARKS, StrId::STR_VIEW_BOOKMARKS});
+      bookmarkItems.push_back({MenuAction::DELETE_BOOKMARKS, StrId::STR_DELETE_BOOKMARKS});
+    }
   }
-  bookmarkItems.push_back(
-      {MenuAction::BOOKMARK_TOGGLE, isCurrentPageBookmarked ? StrId::STR_REMOVE_BOOKMARK : StrId::STR_ADD_BOOKMARK});
-  if (hasBookmarks) {
-    bookmarkItems.push_back({MenuAction::VIEW_BOOKMARKS, StrId::STR_VIEW_BOOKMARKS});
-    bookmarkItems.push_back({MenuAction::DELETE_BOOKMARKS, StrId::STR_DELETE_BOOKMARKS});
+  if (showExternalSync) {
+    bookmarkItems.push_back({MenuAction::SYNC, StrId::STR_SYNC_PROGRESS});
   }
-  bookmarkItems.push_back({MenuAction::SYNC, StrId::STR_SYNC_PROGRESS});
-  bookmarkItems.push_back({MenuAction::NEARBY_POSITION_SYNC, StrId::STR_NEARBY_POSITION_SYNC});
-  bookmarkItems.push_back({MenuAction::SEND_NEARBY_BOOK, StrId::STR_SEND_NEARBY_BOOK});
+  if (showNearbySync) {
+    bookmarkItems.push_back({MenuAction::NEARBY_POSITION_SYNC, StrId::STR_NEARBY_POSITION_SYNC});
+    // Nearby book transfer shares the capability gate: PDFs are not nearby-transferable.
+    bookmarkItems.push_back({MenuAction::SEND_NEARBY_BOOK, StrId::STR_SEND_NEARBY_BOOK});
+  }
   bookmarkItems.push_back({MenuAction::SCREENSHOT, StrId::STR_SCREENSHOT_BUTTON});
   bookmarkItems.push_back({MenuAction::DISPLAY_QR, StrId::STR_DISPLAY_QR});
 

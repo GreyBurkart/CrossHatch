@@ -8,6 +8,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <MemoryBudget.h>
+#include <ReflowDocument.h>
 #include <Utf8.h>
 #include <XmlParserUtils.h>
 #include <expat.h>
@@ -20,7 +21,6 @@
 #include <new>
 #include <string_view>
 
-#include "Epub.h"
 #include "Epub/Page.h"
 #include "Epub/converters/ImageDecoderFactory.h"
 #include "Epub/converters/ImageDimsProbe.h"
@@ -32,6 +32,7 @@
 // Minimum file size (in bytes) to show indexing popup - smaller chapters don't benefit from it
 constexpr size_t MIN_SIZE_FOR_POPUP = 10 * 1024;  // 10KB
 constexpr size_t PARSE_BUFFER_SIZE = 1024;
+constexpr size_t IMAGE_EXTRACT_CHUNK_SIZE = 1024;
 // Initial slab for the parse arena. Covers both style stacks (~2 KB) with headroom for growth.
 constexpr size_t PARSE_ARENA_SLAB_SIZE = 4 * 1024;
 constexpr size_t DEFAULT_BUFFERED_WORDS_BEFORE_LAYOUT = 350;
@@ -41,6 +42,11 @@ constexpr size_t SINGLE_READING_AID_BUFFERED_WORDS_BEFORE_LAYOUT = 240;
 constexpr uint16_t SINGLE_READING_AID_TEXT_RUN_BYTES_BEFORE_LAYOUT = 1536;
 constexpr size_t COMBINED_READING_AID_BUFFERED_WORDS_BEFORE_LAYOUT = 175;
 constexpr uint16_t COMBINED_READING_AID_TEXT_RUN_BYTES_BEFORE_LAYOUT = 1024;
+// A 200-byte parser word can produce at most 67 CJK tokens, or 200 tokens
+// under bionic punctuation splitting. These PDF-only windows therefore fit
+// the 384-entry ParsedText token array without a later contiguous growth.
+constexpr size_t PDF_BUFFERED_WORDS_BEFORE_LAYOUT = 317;
+constexpr size_t PDF_BIONIC_BUFFERED_WORDS_BEFORE_LAYOUT = 184;
 constexpr size_t SECTION_ADVANCE_PREWARM_READ_BUFFER_SIZE = 512;
 constexpr uint32_t SECTION_ADVANCE_PREWARM_MAX_CODEPOINTS = 4096;
 // The whole-section advance prewarm is a batch-I/O optimization, not a requirement:
@@ -372,8 +378,12 @@ bool ChapterHtmlSlimParser::shouldAbortForLowMemory(const char* stage) {
     return true;
   }
 
+  const uint32_t minimumFree =
+      usesSemanticLayout() ? MemoryBudget::PDF_TEXT_LAYOUT_MIN_FREE : MemoryBudget::EPUB_TEXT_LAYOUT_MIN_FREE;
+  const uint32_t minimumMaxAlloc =
+      usesSemanticLayout() ? MemoryBudget::PDF_TEXT_LAYOUT_MIN_MAX_ALLOC : MemoryBudget::EPUB_TEXT_LAYOUT_MIN_MAX_ALLOC;
   auto heap = MemoryBudget::snapshot();
-  if (MemoryBudget::hasHeapForEpubTextLayoutStart(heap)) {
+  if (MemoryBudget::hasHeap(heap, minimumFree, minimumMaxAlloc)) {
     return false;
   }
 
@@ -384,7 +394,7 @@ bool ChapterHtmlSlimParser::shouldAbortForLowMemory(const char* stage) {
       LOG_DBG("EHP", "Released SD font caches before %s: free=%u->%u maxAlloc=%u->%u", stage, heap.freeHeap,
               afterRelease.freeHeap, heap.maxAllocHeap, afterRelease.maxAllocHeap);
       heap = afterRelease;
-      if (MemoryBudget::hasHeapForEpubTextLayoutStart(heap)) {
+      if (MemoryBudget::hasHeap(heap, minimumFree, minimumMaxAlloc)) {
         return false;
       }
     }
@@ -427,7 +437,58 @@ void ChapterHtmlSlimParser::markCurrentPageFromCurrentElement() {
   currentPageListItemIndex = xpathListItemIndex;
 }
 
+bool ChapterHtmlSlimParser::finishPaginationTextBlock() {
+  const bool success = paginationHooks_.vtable == nullptr || paginationHooks_.vtable->finishTextBlock == nullptr ||
+                       paginationHooks_.vtable->finishTextBlock(paginationHooks_.context, currentPage.get());
+  paginationHookFailed = paginationHookFailed || !success;
+  return success;
+}
+
+bool ChapterHtmlSlimParser::beginPaginationTextBlock() {
+  return beginPaginationTextBlock(pendingAnchorId.data(), pendingAnchorId.size());
+}
+
+bool ChapterHtmlSlimParser::beginPaginationTextBlock(const char* const anchor, const size_t anchorLength) {
+  const bool success = paginationHooks_.vtable == nullptr || paginationHooks_.vtable->beginTextBlock == nullptr ||
+                       paginationHooks_.vtable->beginTextBlock(paginationHooks_.context, anchor, anchorLength);
+  paginationHookFailed = paginationHookFailed || !success;
+  return success;
+}
+
+bool ChapterHtmlSlimParser::trackPaginationTextLine(const TextBlock& line) {
+  const bool success = paginationHooks_.vtable == nullptr || paginationHooks_.vtable->trackTextLine == nullptr ||
+                       paginationHooks_.vtable->trackTextLine(paginationHooks_.context, &line);
+  paginationHookFailed = paginationHookFailed || !success;
+  return success;
+}
+
+bool ChapterHtmlSlimParser::usesSemanticLayout() const { return paginationHooks_.vtable != nullptr; }
+
+bool ChapterHtmlSlimParser::shouldRetainAnchor(const std::string& anchor) const {
+  if (!usesSemanticLayout() || anchor.size() != 9 || anchor.front() != 'b') {
+    return true;
+  }
+  if (std::find(tocAnchors.begin(), tocAnchors.end(), anchor) != tocAnchors.end()) {
+    return true;
+  }
+  for (size_t i = 1; i < anchor.size(); ++i) {
+    const char c = anchor[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+      return true;
+    }
+  }
+  // Generated PDF block anchors are already persisted by the semantic word
+  // sidecar. Keeping them again in the chapter-wide fragment map only retains
+  // hundreds of strings until the complete section has been laid out.
+  return false;
+}
+
 void ChapterHtmlSlimParser::completeCurrentPage() {
+  if (paginationHooks_.vtable && paginationHooks_.vtable->completePage) {
+    paginationHooks_.vtable->completePage(paginationHooks_.context, std::move(currentPage), currentPageParagraphIndex,
+                                          currentPageListItemIndex, currentPageVisibleOffset);
+    return;
+  }
   completePageFn(std::move(currentPage), currentPageParagraphIndex, currentPageListItemIndex, currentPageVisibleOffset);
 }
 
@@ -457,7 +518,9 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
   }
 
   // Record deferred anchor after previous block is flushed (and any TOC page break)
-  anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+  if (shouldRetainAnchor(pendingAnchorId)) {
+    anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+  }
   pendingAnchorId.clear();
   pendingAnchorFromInlineA = false;
 }
@@ -659,16 +722,32 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
       std::min<size_t>(currentTextRunBytes + static_cast<size_t>(partWordBufferIndex), UINT16_MAX));
   partWordBufferIndex = 0;
   nextWordContinues = false;
+
+  // Expat may deliver hundreds of words in one character-data callback. Apply
+  // the existing long-run boundary as words arrive so a callback cannot force
+  // another large contiguous token-vector growth before the end-of-callback
+  // check. layoutAndExtractLines retains the unfinished final line, preserving
+  // the same paragraph and line-breaking semantics.
+  if (currentTextBlock->size() > bufferedWordsBeforeLayoutLimit() ||
+      currentTextRunBytes > textRunBytesBeforeLayoutLimit()) {
+    flushLongTextRunIfNeeded();
+  }
 }
 
 size_t ChapterHtmlSlimParser::bufferedWordsBeforeLayoutLimit() const {
+  size_t limit = DEFAULT_BUFFERED_WORDS_BEFORE_LAYOUT;
   if (focusReadingEnabled && guideReadingEnabled) {
-    return COMBINED_READING_AID_BUFFERED_WORDS_BEFORE_LAYOUT;
+    limit = COMBINED_READING_AID_BUFFERED_WORDS_BEFORE_LAYOUT;
+  } else if (focusReadingEnabled || guideReadingEnabled) {
+    limit = SINGLE_READING_AID_BUFFERED_WORDS_BEFORE_LAYOUT;
+  } else if (embeddedStyle) {
+    limit = CSS_BUFFERED_WORDS_BEFORE_LAYOUT;
   }
-  if (focusReadingEnabled || guideReadingEnabled) {
-    return SINGLE_READING_AID_BUFFERED_WORDS_BEFORE_LAYOUT;
+  if (!usesSemanticLayout()) {
+    return limit;
   }
-  return embeddedStyle ? CSS_BUFFERED_WORDS_BEFORE_LAYOUT : DEFAULT_BUFFERED_WORDS_BEFORE_LAYOUT;
+  return std::min(limit,
+                  focusReadingEnabled ? PDF_BIONIC_BUFFERED_WORDS_BEFORE_LAYOUT : PDF_BUFFERED_WORDS_BEFORE_LAYOUT);
 }
 
 uint16_t ChapterHtmlSlimParser::textRunBytesBeforeLayoutLimit() const {
@@ -705,7 +784,7 @@ void ChapterHtmlSlimParser::flushLongTextRunIfNeeded(const bool force) {
           [this](const std::shared_ptr<TextBlock>& textBlock, const uint32_t offset) {
             addLineToPage(textBlock, offset);
           },
-          false)) {
+          false, usesSemanticLayout())) {
     LOG_ERR("EHP", "Failed to lay out long text run");
     lowMemoryAbort = true;
     return;
@@ -720,6 +799,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   }
 
   nextWordContinues = false;  // New block = new paragraph, no continuation
+  const bool deferBufferedTableCellSemanticBlock = usesSemanticLayout() && tableDepth == 1 && currentTableBuffer;
   if (currentTextBlock) {
     // already have a text block running and it is empty - just reuse it
     if (currentTextBlock->isEmpty()) {
@@ -742,19 +822,34 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       currentTextBlockParagraphIndex = xpathParagraphIndex;
       currentTextBlockListItemIndex = xpathListItemIndex;
 
+      if (!finishPaginationTextBlock() || (!deferBufferedTableCellSemanticBlock && !beginPaginationTextBlock())) {
+        LOG_ERR("EHP", "Failed to transition PDF semantic text block");
+        lowMemoryAbort = true;
+        return;
+      }
       flushPendingAnchor();
       return;
     }
 
     makePages();
+    if (!finishPaginationTextBlock()) {
+      LOG_ERR("EHP", "Failed to finalize PDF semantic text block");
+      lowMemoryAbort = true;
+      return;
+    }
   }
   currentTextRunBytes = 0;
+  if (!deferBufferedTableCellSemanticBlock && !beginPaginationTextBlock()) {
+    LOG_ERR("EHP", "Failed to begin PDF semantic text block");
+    lowMemoryAbort = true;
+    return;
+  }
   // If the pending anchor is a TOC chapter boundary, force a page break after the previous
   // block is flushed so the chapter starts on a fresh page.
   flushPendingAnchor();
-  currentTextBlock.reset(new (std::nothrow)
-                             ParsedText(extraParagraphSpacing, forceParagraphIndents, hyphenationEnabled,
-                                        focusReadingEnabled, guideReadingEnabled, wordSpacing, blockStyle));
+  currentTextBlock.reset(new (std::nothrow) ParsedText(extraParagraphSpacing, forceParagraphIndents, hyphenationEnabled,
+                                                       focusReadingEnabled, guideReadingEnabled, wordSpacing,
+                                                       blockStyle, usesSemanticLayout()));
   if (!currentTextBlock) {
     const auto heap = MemoryBudget::snapshot();
     LOG_ERR("EHP", "Failed to create text block (%u free, %u max alloc)", heap.freeHeap, heap.maxAllocHeap);
@@ -797,12 +892,17 @@ void ChapterHtmlSlimParser::finalizeCurrentTableCell() {
 
   if (!currentTableBuffer) {
     makePages();
+    if (!lowMemoryAbort && !finishPaginationTextBlock()) {
+      LOG_ERR("EHP", "Failed to finalize PDF table fallback text block");
+      lowMemoryAbort = true;
+    }
     currentTextBlock.reset();
     pendingFootnotes.clear();
     currentTableCellIsHeader = false;
     currentTableCellColSpan = 1;
     wordsExtractedInBlock = 0;
     nextWordContinues = false;
+    currentTableCellSemanticDeferred = false;
     return;
   }
 
@@ -838,6 +938,7 @@ void ChapterHtmlSlimParser::finalizeCurrentTableCell() {
   currentTableCellColSpan = 1;
   wordsExtractedInBlock = 0;
   nextWordContinues = false;
+  currentTableCellSemanticDeferred = false;
 }
 
 void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
@@ -899,7 +1000,9 @@ void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
   headingOpenerActive = false;
 
   if (!pendingAnchorId.empty()) {
-    anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+    if (shouldRetainAnchor(pendingAnchorId)) {
+      anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+    }
     pendingAnchorId.clear();
     pendingAnchorFromInlineA = false;
   }
@@ -919,16 +1022,33 @@ void ChapterHtmlSlimParser::emitBufferedTableAsParagraphs(BufferedTable& table) 
     currentPageNextY += table.blockStyle.paddingTop;
   }
 
+  uint16_t semanticCellIndex = 0;
   for (auto& row : table.rows) {
     for (auto& cell : row.cells) {
       if (!cell.text) {
+        ++semanticCellIndex;
         continue;
       }
 
       pendingFootnotes = std::move(cell.footnotes);
       currentTextBlock = std::move(cell.text);
       wordsExtractedInBlock = 0;
+      const char* const paginationAnchor = table.paginationAnchorAt(semanticCellIndex);
+      ++semanticCellIndex;
+      size_t anchorLength = 0;
+      while (paginationAnchor && anchorLength < TABLE_SEMANTIC_ANCHOR_BYTES && paginationAnchor[anchorLength] != '\0') {
+        ++anchorLength;
+      }
+      if (!beginPaginationTextBlock(paginationAnchor, anchorLength)) {
+        LOG_ERR("EHP", "Failed to begin PDF table fallback semantic block");
+        lowMemoryAbort = true;
+        break;
+      }
       makePages();
+      if (!lowMemoryAbort && !finishPaginationTextBlock()) {
+        LOG_ERR("EHP", "Failed to finish PDF table fallback semantic block");
+        lowMemoryAbort = true;
+      }
       currentTextBlock.reset();
       pendingFootnotes.clear();
       if (lowMemoryAbort) {
@@ -997,12 +1117,34 @@ bool ChapterHtmlSlimParser::flushStreamingTableFragment(BufferedTable& table) {
 
 void ChapterHtmlSlimParser::emitStreamingTableRowsAsParagraphs(BufferedTable& table) {
   for (auto& row : table.rows) {
+    uint16_t semanticCellIndex = 0;
     for (auto& cell : row.cells) {
-      if (!cell.text) continue;
+      const char* const paginationAnchor = table.paginationAnchorAt(semanticCellIndex++);
+      size_t anchorLength = 0;
+      while (paginationAnchor && anchorLength < TABLE_SEMANTIC_ANCHOR_BYTES && paginationAnchor[anchorLength] != '\0') {
+        ++anchorLength;
+      }
+      if (!beginPaginationTextBlock(paginationAnchor, anchorLength)) {
+        LOG_ERR("EHP", "Failed to begin streamed PDF table fallback semantic block");
+        lowMemoryAbort = true;
+        return;
+      }
+      if (!cell.text) {
+        if (!finishPaginationTextBlock()) {
+          LOG_ERR("EHP", "Failed to finish empty streamed PDF table fallback semantic block");
+          lowMemoryAbort = true;
+          return;
+        }
+        continue;
+      }
       pendingFootnotes = std::move(cell.footnotes);
       currentTextBlock = std::move(cell.text);
       wordsExtractedInBlock = 0;
       makePages();
+      if (!lowMemoryAbort && !finishPaginationTextBlock()) {
+        LOG_ERR("EHP", "Failed to finish streamed PDF table fallback semantic block");
+        lowMemoryAbort = true;
+      }
       currentTextBlock.reset();
       pendingFootnotes.clear();
       if (lowMemoryAbort) return;
@@ -1084,7 +1226,8 @@ bool ChapterHtmlSlimParser::streamCurrentTableRow() {
             renderer, fontId,
             TableColumnLayout::innerWidth(tableWidth, columnCount, static_cast<uint8_t>(cellIndex), 1,
                                           TABLE_CELL_PADDING),
-            [&destCell](const std::shared_ptr<TextBlock>& textBlock) { destCell.lines.push_back(textBlock); }, true)) {
+            [&destCell](const std::shared_ptr<TextBlock>& textBlock) { destCell.lines.push_back(textBlock); }, true,
+            usesSemanticLayout())) {
       fallbackStreamingTableToParagraphs("cell layout failed");
       return !lowMemoryAbort;
     }
@@ -1131,6 +1274,32 @@ bool ChapterHtmlSlimParser::streamCurrentTableRow() {
   if (table.streamingFragmentRows.empty()) {
     table.streamingFragmentColumnCount = columnCount;
     table.streamingFragmentVisibleOffset = row.cells.front().visibleTextOffset;
+  }
+  if (usesSemanticLayout()) {
+    for (size_t cellIndex = 0; cellIndex < row.cells.size(); ++cellIndex) {
+      const char* const paginationAnchor = table.paginationAnchorAt(static_cast<uint16_t>(cellIndex));
+      size_t anchorLength = 0;
+      while (paginationAnchor && anchorLength < TABLE_SEMANTIC_ANCHOR_BYTES && paginationAnchor[anchorLength] != '\0') {
+        ++anchorLength;
+      }
+      if (!beginPaginationTextBlock(paginationAnchor, anchorLength)) {
+        LOG_ERR("EHP", "Failed to begin streamed PDF table semantic block");
+        lowMemoryAbort = true;
+        return false;
+      }
+      for (const auto& line : fragmentRow.cells[cellIndex].lines) {
+        if (line && !trackPaginationTextLine(*line)) {
+          LOG_ERR("EHP", "Failed to track streamed PDF table semantic line");
+          lowMemoryAbort = true;
+          return false;
+        }
+      }
+      if (!finishPaginationTextBlock()) {
+        LOG_ERR("EHP", "Failed to finish streamed PDF table semantic block");
+        lowMemoryAbort = true;
+        return false;
+      }
+    }
   }
   table.streamingFragmentHeight = static_cast<uint16_t>(table.streamingFragmentHeight + fragmentRow.height);
   table.streamingFragmentRows.push_back(std::move(fragmentRow));
@@ -1339,8 +1508,8 @@ void ChapterHtmlSlimParser::emitBufferedTableAsFragments(BufferedTable& table) {
                 renderer, fontId,
                 TableColumnLayout::innerWidth(tableWidth, columnCount, static_cast<uint8_t>(colIndex), 1,
                                               TABLE_CELL_PADDING),
-                [&destCell](const std::shared_ptr<TextBlock>& textBlock) { destCell.lines.push_back(textBlock); },
-                true)) {
+                [&destCell](const std::shared_ptr<TextBlock>& textBlock) { destCell.lines.push_back(textBlock); }, true,
+                usesSemanticLayout())) {
           LOG_DBG("EHP", "Table layout fallback: cell text layout failed");
           return false;
         }
@@ -1406,6 +1575,41 @@ void ChapterHtmlSlimParser::emitBufferedTableAsFragments(BufferedTable& table) {
   if (table.blockStyle.paddingTop > 0) {
     currentPageNextY += table.blockStyle.paddingTop;
   }
+  size_t nextTrackedSourceRow = 0;
+  uint16_t nextTrackedSemanticCell = 0;
+  auto trackPreparedRow = [this, &table, &nextTrackedSourceRow,
+                           &nextTrackedSemanticCell](const PreparedRow& prepared) -> bool {
+    if (!usesSemanticLayout()) {
+      return true;
+    }
+    if (nextTrackedSourceRow >= table.rows.size()) {
+      return false;
+    }
+    const auto& sourceRow = table.rows[nextTrackedSourceRow++];
+    if (sourceRow.cells.size() > prepared.fragmentRow.cells.size()) {
+      return false;
+    }
+    for (size_t cellIndex = 0; cellIndex < sourceRow.cells.size(); ++cellIndex) {
+      const auto& fragmentCell = prepared.fragmentRow.cells[cellIndex];
+      const char* const paginationAnchor = table.paginationAnchorAt(nextTrackedSemanticCell++);
+      size_t anchorLength = 0;
+      while (paginationAnchor && anchorLength < TABLE_SEMANTIC_ANCHOR_BYTES && paginationAnchor[anchorLength] != '\0') {
+        ++anchorLength;
+      }
+      if (!beginPaginationTextBlock(paginationAnchor, anchorLength)) {
+        return false;
+      }
+      for (const auto& line : fragmentCell.lines) {
+        if (line && !trackPaginationTextLine(*line)) {
+          return false;
+        }
+      }
+      if (!finishPaginationTextBlock()) {
+        return false;
+      }
+    }
+    return true;
+  };
   for (auto& segment : preparedSegments) {
     size_t nextRowIndex = 0;
     while (nextRowIndex < segment.rows.size()) {
@@ -1441,6 +1645,12 @@ void ChapterHtmlSlimParser::emitBufferedTableAsFragments(BufferedTable& table) {
         }
 
         fragmentHeight = nextHeight;
+        if (!trackPreparedRow(segment.rows[nextRowIndex])) {
+          LOG_ERR("EHP", "Failed to track PDF table fragment semantics");
+          lowMemoryAbort = true;
+          releasePreparedSegments();
+          return;
+        }
         fragmentRows.push_back(std::move(segment.rows[nextRowIndex].fragmentRow));
         fragmentFootnotes.insert(fragmentFootnotes.end(), segment.rows[nextRowIndex].footnotes.begin(),
                                  segment.rows[nextRowIndex].footnotes.end());
@@ -1449,6 +1659,12 @@ void ChapterHtmlSlimParser::emitBufferedTableAsFragments(BufferedTable& table) {
 
       if (fragmentRows.empty()) {
         fragmentHeight = static_cast<uint16_t>(1 + segment.rows[nextRowIndex].fragmentRow.height);
+        if (!trackPreparedRow(segment.rows[nextRowIndex])) {
+          LOG_ERR("EHP", "Failed to track PDF table fragment semantics");
+          lowMemoryAbort = true;
+          releasePreparedSegments();
+          return;
+        }
         fragmentRows.push_back(std::move(segment.rows[nextRowIndex].fragmentRow));
         fragmentFootnotes.insert(fragmentFootnotes.end(), segment.rows[nextRowIndex].footnotes.begin(),
                                  segment.rows[nextRowIndex].footnotes.end());
@@ -1535,8 +1751,23 @@ void ChapterHtmlSlimParser::fallbackCurrentTableBufferToParagraphs(const char* r
   const bool activeNextWordContinues = nextWordContinues;
   const bool activeTableCellIsHeader = currentTableCellIsHeader;
   const uint8_t activeTableCellColSpan = currentTableCellColSpan;
+  const bool activeTableCellSemanticDeferred = currentTableCellSemanticDeferred;
 
   emitBufferedTableAsParagraphs(*currentTableBuffer);
+  bool activeSemanticResumed = !activeTableCellSemanticDeferred;
+  if (activeTableCellSemanticDeferred && !lowMemoryAbort) {
+    const char* const paginationAnchor = currentTableBuffer->paginationAnchorAt(currentTableBuffer->totalCells);
+    size_t anchorLength = 0;
+    while (paginationAnchor && anchorLength < TABLE_SEMANTIC_ANCHOR_BYTES && paginationAnchor[anchorLength] != '\0') {
+      ++anchorLength;
+    }
+    if (!beginPaginationTextBlock(paginationAnchor, anchorLength)) {
+      LOG_ERR("EHP", "Failed to resume PDF table fallback semantic block");
+      lowMemoryAbort = true;
+    } else {
+      activeSemanticResumed = true;
+    }
+  }
   currentTableBuffer.reset();
 
   currentTextBlock = std::move(activeTextBlock);
@@ -1545,6 +1776,7 @@ void ChapterHtmlSlimParser::fallbackCurrentTableBufferToParagraphs(const char* r
   nextWordContinues = activeNextWordContinues;
   currentTableCellIsHeader = activeTableCellIsHeader;
   currentTableCellColSpan = activeTableCellColSpan;
+  currentTableCellSemanticDeferred = activeTableCellSemanticDeferred && !activeSemanticResumed;
 }
 
 void ChapterHtmlSlimParser::flushMalformedPartialContent() {
@@ -1910,7 +2142,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     auto tableBlockStyle = BlockStyle::fromCssStyle(cssStyle, emSize, CssTextAlign::Left, self->viewportWidth);
 
     const auto heap = MemoryBudget::snapshot();
-    const bool useCompact = !MemoryBudget::hasHeap(heap, MIN_FREE_HEAP_FOR_RICH_TABLE, MIN_MAX_ALLOC_FOR_RICH_TABLE);
+    // PDF word tracking hooks only cover the buffered path, so PDF tables never
+    // switch to the compact low-memory layout.
+    const bool useCompact = !self->usesSemanticLayout() &&
+                            !MemoryBudget::hasHeap(heap, MIN_FREE_HEAP_FOR_RICH_TABLE, MIN_MAX_ALLOC_FOR_RICH_TABLE);
     if (useCompact) {
       // Finish the preceding paragraph before allocating compact-table state.
       // On C3 this releases its layout buffers before the table's row buffers
@@ -1949,6 +2184,18 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         LOG_ERR("EHP", "Failed to buffer rich table (free=%u, maxAlloc=%u)", heap.freeHeap, heap.maxAllocHeap);
         self->lowMemoryAbort = true;
         return;
+      }
+      if (self->usesSemanticLayout()) {
+        constexpr size_t anchorBufferBytes =
+            static_cast<size_t>(TABLE_SEMANTIC_ANCHOR_CAPACITY) * TABLE_SEMANTIC_ANCHOR_BYTES;
+        self->currentTableBuffer->paginationAnchors = makeUniqueNoThrow<char[]>(anchorBufferBytes);
+        if (!self->currentTableBuffer->paginationAnchors) {
+          LOG_ERR("EHP", "Failed to allocate %u-byte PDF table anchor buffer (%u free, %u max alloc)",
+                  static_cast<unsigned>(anchorBufferBytes), heap.freeHeap, heap.maxAllocHeap);
+          self->currentTableBuffer.reset();
+          self->lowMemoryAbort = true;
+          return;
+        }
       }
       self->currentTableBuffer->blockStyle = tableBlockStyle;
       self->currentTableBuffer->streaming = true;
@@ -2014,6 +2261,18 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->currentCompactTable->markUnsupported();
     }
     self->currentTableCellColSpan = parsedColSpan;
+    if (self->usesSemanticLayout() && self->currentTableBuffer) {
+      char* const paginationAnchor = self->currentTableBuffer->paginationAnchorAt(self->currentTableBuffer->totalCells);
+      if (paginationAnchor == nullptr) {
+        LOG_ERR("EHP", "PDF table semantic anchor capacity exceeded");
+        self->lowMemoryAbort = true;
+        return;
+      }
+      std::memset(paginationAnchor, 0, TABLE_SEMANTIC_ANCHOR_BYTES);
+      if (self->pendingAnchorId.size() < TABLE_SEMANTIC_ANCHOR_BYTES) {
+        std::memcpy(paginationAnchor, self->pendingAnchorId.data(), self->pendingAnchorId.size());
+      }
+    }
     self->currentTableCellVisibleOffset = self->visibleTextOffset;
 
     auto tableCellBlockStyle = BlockStyle();
@@ -2064,6 +2323,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->pendingFootnotes.clear();
     } else {
       self->startNewTextBlock(tableCellBlockStyle);
+      self->currentTableCellSemanticDeferred = self->usesSemanticLayout() && self->currentTableBuffer != nullptr;
     }
 
     self->pushCssAncestor(self->depth, name, classAttr);
@@ -2168,7 +2428,9 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
 
       if (!src.empty() && self->imageRendering != 1) {
-        const std::string resolvedPath = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->contentBase + src));
+        LOG_DBG("EHP", "Found image: src=%s", src.c_str());
+        const std::string resolvedPath = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->contentBase + src),
+                                                                  self->shouldPreserveImagePathRoot());
         if (isSvgImagePath(resolvedPath)) {
           LOG_DBG("EHP", "Skipping unsupported SVG image: %s", resolvedPath.c_str());
           self->skipCurrentElement();
@@ -2178,7 +2440,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         uint16_t optimizerWidth = 0;
         uint16_t optimizerHeight = 0;
         const bool dimensionsFromOptimizer =
-            self->epub->getOptimizerImageDimensions(resolvedPath, optimizerWidth, optimizerHeight);
+            self->sectionSource.getOptimizerImageDimensions(resolvedPath, optimizerWidth, optimizerHeight);
 
         {
           const auto releaseHeapBefore = MemoryBudget::snapshot();
@@ -2195,54 +2457,81 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
             self->skipCurrentElement();
             return;
           } else {
-            if (ImageDecoderFactory::isFormatSupported(resolvedPath)) {
+            // PDF preparation stores each image as a directly readable local file
+            // (often a pixel cache) with known dimensions; EPUB images stay in the zip.
+            ReflowResource localImage;
+            const bool usesBorrowedImage =
+                self->sectionSource.getImmutableLocalResource(self->sectionIndex, resolvedPath, localImage);
+            const bool usesPixelCache = usesBorrowedImage && localImage.imageKind == ReflowImageKind::PixelCache;
+            const std::string& formatPath = usesBorrowedImage ? localImage.localPath : resolvedPath;
+            if (usesPixelCache || ImageDecoderFactory::isFormatSupported(formatPath)) {
               // Optimizer PXC files render without a decoder. Ordinary images
-              // retain the existing guard before any fallback extraction.
-              if (dimensionsFromOptimizer) {
-                if (!MemoryBudget::hasHeapForOptimizerPxcImage("EHP", src.c_str())) {
+              // retain the existing guard before any fallback extraction. Borrowed
+              // PDF images skip the decoder headroom estimate; the renderer makes
+              // the real format-specific allocation when the page is displayed.
+              if (!usesBorrowedImage) {
+                if (dimensionsFromOptimizer) {
+                  if (!MemoryBudget::hasHeapForOptimizerPxcImage("EHP", src.c_str())) {
+                    self->lowMemoryImageFallback = true;
+                    self->skipCurrentElement();
+                    return;
+                  }
+                } else if (!MemoryBudget::hasHeapForEpubInlineImage("EHP", src.c_str())) {
                   self->lowMemoryImageFallback = true;
                   self->skipCurrentElement();
                   return;
                 }
-              } else if (!MemoryBudget::hasHeapForEpubInlineImage("EHP", src.c_str())) {
-                self->lowMemoryImageFallback = true;
-                self->skipCurrentElement();
-                return;
               }
 
-              // Create a unique filename for the cached image
-              std::string ext;
-              size_t extPos = resolvedPath.rfind('.');
-              if (extPos != std::string::npos) {
-                ext = resolvedPath.substr(extPos);
-              }
-              std::string cachedImagePath = self->imageBasePath + std::to_string(self->imageCounter++) + ext;
-
-              // Read just enough compressed data to find dimensions. The full
-              // image remains inside the EPUB until its page is first rendered.
-              ImageDimensions dims = {0, 0};
-              if (dimensionsFromOptimizer) {
-                dims = {static_cast<int16_t>(optimizerWidth), static_cast<int16_t>(optimizerHeight)};
-              }
-              ImageDimsProbe headerProbe;
-              bool gotDimensions =
-                  dimensionsFromOptimizer || (self->epub->readItemContentsToStream(resolvedPath, headerProbe, 1024,
-                                                                                   /*allowEarlyStop=*/true) &&
-                                              headerProbe.getDimensions(dims));
+              std::string cachedImagePath;
               std::string sourcePath;
-              if (gotDimensions) {
-                sourcePath = resolvedPath;
-              } else if (self->epub->extractItemToFile(resolvedPath, cachedImagePath)) {
-                // Unusual headers fall back to the existing full-file decoder.
-                // Retry only if needed to tolerate slow SD-card sync.
-                ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(cachedImagePath);
-                for (int attempt = 0; attempt < 3 && !gotDimensions; attempt++) {
-                  if (attempt > 0) {
-                    delay(50);
-                  }
+              ImageDimensions dims = {0, 0};
+              bool gotDimensions = false;
+              if (usesBorrowedImage) {
+                cachedImagePath = localImage.localPath;
+                const bool hasSuppliedDimensions = localImage.width > 0 && localImage.height > 0 &&
+                                                   localImage.width <= static_cast<uint16_t>(INT16_MAX) &&
+                                                   localImage.height <= static_cast<uint16_t>(INT16_MAX);
+                if (hasSuppliedDimensions) {
+                  dims = {static_cast<int16_t>(localImage.width), static_cast<int16_t>(localImage.height)};
+                  gotDimensions = Storage.exists(cachedImagePath.c_str());
+                } else if (!usesPixelCache) {
+                  ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(cachedImagePath);
                   gotDimensions = decoder && decoder->getDimensions(cachedImagePath, dims);
                 }
-              }
+              } else {
+                // Create a unique filename for the cached image
+                std::string ext;
+                size_t extPos = resolvedPath.rfind('.');
+                if (extPos != std::string::npos) {
+                  ext = resolvedPath.substr(extPos);
+                }
+                cachedImagePath = self->imageBasePath + std::to_string(self->imageCounter++) + ext;
+
+                // Read just enough compressed data to find dimensions. The full
+                // image remains inside the EPUB until its page is first rendered.
+                if (dimensionsFromOptimizer) {
+                  dims = {static_cast<int16_t>(optimizerWidth), static_cast<int16_t>(optimizerHeight)};
+                }
+                ImageDimsProbe headerProbe;
+                gotDimensions = dimensionsFromOptimizer || (self->sectionSource.probeResource(
+                                                                self->sectionIndex, resolvedPath, headerProbe, 1024) &&
+                                                            headerProbe.getDimensions(dims));
+                if (gotDimensions) {
+                  sourcePath = resolvedPath;
+                } else if (self->sectionSource.extractResourceToFile(self->sectionIndex, resolvedPath,
+                                                                     cachedImagePath)) {
+                  // Unusual headers fall back to the existing full-file decoder.
+                  // Retry only if needed to tolerate slow SD-card sync.
+                  ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(cachedImagePath);
+                  for (int attempt = 0; attempt < 3 && !gotDimensions; attempt++) {
+                    if (attempt > 0) {
+                      delay(50);
+                    }
+                    gotDimensions = decoder && decoder->getDimensions(cachedImagePath, dims);
+                  }
+                }
+              }  // !usesBorrowedImage
 
               if (gotDimensions) {
                 int displayWidth = 0;
@@ -2341,10 +2630,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   displayHeight = (int)(dims.height * scale);
                 }
 
-                if ((!dimensionsFromOptimizer &&
-                     !MemoryBudget::hasHeapForEpubInlineImage("EHP", cachedImagePath.c_str())) ||
-                    (dimensionsFromOptimizer &&
-                     !MemoryBudget::hasHeapForOptimizerPxcImage("EHP", cachedImagePath.c_str()))) {
+                if (!usesBorrowedImage && ((!dimensionsFromOptimizer &&
+                                            !MemoryBudget::hasHeapForEpubInlineImage("EHP", cachedImagePath.c_str())) ||
+                                           (dimensionsFromOptimizer && !MemoryBudget::hasHeapForOptimizerPxcImage(
+                                                                           "EHP", cachedImagePath.c_str())))) {
                   self->lowMemoryImageFallback = true;
                   if (sourcePath.empty()) Storage.remove(cachedImagePath.c_str());
                   self->skipCurrentElement();
@@ -2444,7 +2733,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                 self->depth += 1;
                 return;
               } else {
-                Storage.remove(cachedImagePath.c_str());
+                if (!usesBorrowedImage) Storage.remove(cachedImagePath.c_str());
                 const uint32_t postFailureFreeHeap = ESP.getFreeHeap();
                 const uint32_t postFailureMaxAllocHeap = ESP.getMaxAllocHeap();
                 if (!self->lowMemoryImageFallback &&
@@ -2528,7 +2817,11 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       // TODO: Parse data-* attributes to extract actual href
     }
 
-    if (isInternalLink) {
+    // PDF reflow keeps chapter/index navigation in its own metadata. The EPUB
+    // footnote-link IDs share TextBlock flag bits with PDF semantic word
+    // tracking, so encoding both corrupts the fixed word index for linked
+    // contents pages.
+    if (isInternalLink && !self->usesSemanticLayout()) {
       // Flush buffer before style change
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
@@ -3114,6 +3407,10 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
       static_cast<size_t>(self->currentTextRunBytes) + static_cast<size_t>(self->partWordBufferIndex) >
           self->textRunBytesBeforeLayoutLimit()) {
     self->flushPartWordBuffer();
+    // The byte budget can cut an Expat character-data chunk in the middle of
+    // a word. Keep the next token joined unless the next input is whitespace
+    // (which clears this flag) or a new block (which also clears it).
+    self->nextWordContinues = true;
   }
   self->flushLongTextRunIfNeeded();
 }
@@ -3543,6 +3840,7 @@ void ChapterHtmlSlimParser::releaseInputFile() {
 bool ChapterHtmlSlimParser::beginParse() {
   malformedMarkupTruncated = false;
   htmlEnded_ = false;
+  paginationHookFailed = false;
   parseFileOffset_ = 0;
   parseFileSize_ = 0;
   // Runs before the render pass opens the file, so only one reader is ever open at a time.
@@ -3615,6 +3913,13 @@ bool ChapterHtmlSlimParser::beginParse() {
   }
   parseFileSize_ = parseFile_.size();
 
+#ifdef SIMULATOR
+  if (simulatorFault_ == ChapterHtmlSlimParserSimulatorFault::LowMemoryAfterSourceOpen) {
+    simulatorFault_ = ChapterHtmlSlimParserSimulatorFault::None;
+    lowMemoryAbort = true;
+  }
+#endif
+
   // Get file size to decide whether to show indexing popup.
   if (popupFn && parseFileSize_ >= MIN_SIZE_FOR_POPUP) {
     popupFn();
@@ -3637,6 +3942,18 @@ ChapterHtmlSlimParser::ParseStatus ChapterHtmlSlimParser::parseStep() {
   }
   if (!ensureInputFileOpen()) {
     LOG_ERR("EHP", "Failed to reopen parser input");
+    return ParseStatus::Error;
+  }
+
+#ifdef SIMULATOR
+  if (simulatorFault_ == ChapterHtmlSlimParserSimulatorFault::ParserBufferOom) {
+    simulatorFault_ = ChapterHtmlSlimParserSimulatorFault::None;
+    LOG_ERR("EHP", "Simulator fault: parser buffer OOM");
+    return ParseStatus::Error;
+  }
+#endif
+  if (lowMemoryAbort) {
+    LOG_ERR("EHP", "Aborting section parse due to low heap");
     return ParseStatus::Error;
   }
 
@@ -3736,8 +4053,15 @@ bool ChapterHtmlSlimParser::finishParse() {
       abortParse();
       return false;
     }
+    if (!finishPaginationTextBlock()) {
+      LOG_ERR("EHP", "Failed to finalize trailing PDF semantic text block");
+      abortParse();
+      return false;
+    }
     if (!pendingAnchorId.empty()) {
-      anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+      if (shouldRetainAnchor(pendingAnchorId)) {
+        anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+      }
       pendingAnchorId.clear();
       pendingAnchorFromInlineA = false;
     }
@@ -3884,9 +4208,11 @@ void ChapterHtmlSlimParser::makePages() {
       (horizontalInset < viewportWidth) ? static_cast<uint16_t>(viewportWidth - horizontalInset) : viewportWidth;
 
   if (!currentTextBlock->layoutAndExtractLines(
-          renderer, fontId, effectiveWidth, [this](const std::shared_ptr<TextBlock>& textBlock, const uint32_t offset) {
+          renderer, fontId, effectiveWidth,
+          [this](const std::shared_ptr<TextBlock>& textBlock, const uint32_t offset) {
             addLineToPage(textBlock, offset);
-          })) {
+          },
+          true, usesSemanticLayout())) {
     LOG_ERR("EHP", "Failed to lay out text block");
     lowMemoryAbort = true;
     return;

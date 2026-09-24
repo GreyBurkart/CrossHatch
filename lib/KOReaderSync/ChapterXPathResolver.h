@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Epub.h>
+#include <ReflowDocument.h>
 
 #include <cstdint>
 #include <memory>
@@ -16,14 +16,16 @@ class ChapterXPathResolver {
    *
    * An empty string means parsing failed or the paragraph index was not found.
    */
-  static std::string findXPathForParagraph(const std::shared_ptr<Epub>& epub, int spineIndex, uint16_t paragraphIndex);
+  static std::string findXPathForParagraph(const std::shared_ptr<ReflowDocument>& document, int spineIndex,
+                                           uint16_t paragraphIndex);
 
   /**
    * Resolve the Nth list item in a spine item to its real XHTML ancestry path.
    *
    * An empty string means parsing failed or the list item index was not found.
    */
-  static std::string findXPathForListItem(const std::shared_ptr<Epub>& epub, int spineIndex, uint16_t listItemIndex);
+  static std::string findXPathForListItem(const std::shared_ptr<ReflowDocument>& document, int spineIndex,
+                                          uint16_t listItemIndex);
 
   /**
    * Resolve intra-spine progress to a real XHTML ancestry path plus text offset.
@@ -33,10 +35,11 @@ class ChapterXPathResolver {
    *
    * An empty string means parsing failed or the location could not be resolved.
    */
-  static std::string findXPathForProgress(const std::shared_ptr<Epub>& epub, int spineIndex, float intraSpineProgress);
+  static std::string findXPathForProgress(const std::shared_ptr<ReflowDocument>& document, int spineIndex,
+                                          float intraSpineProgress);
 
   // Resolve a zero-based visible Unicode codepoint offset. This is the stable
   // page position stored in CrossInk's section cache, independent of layout.
-  static std::string findXPathForVisibleTextOffset(const std::shared_ptr<Epub>& epub, int spineIndex,
+  static std::string findXPathForVisibleTextOffset(const std::shared_ptr<ReflowDocument>& document, int spineIndex,
                                                    uint32_t visibleTextOffset);
 };

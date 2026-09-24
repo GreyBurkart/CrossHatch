@@ -5,6 +5,9 @@
 #include <vector>
 
 #include "../Activity.h"
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+#include "RecentBookProgress.h"
+#endif
 #include "RecentBooksStore.h"
 #include "util/ButtonNavigator.h"
 
@@ -37,6 +40,9 @@ class RecentBooksGridActivity final : public Activity {
   StrId actionFeedback = StrId::STR_BOOK_CACHE_DELETED;
   unsigned long actionFeedbackShowTime = 0UL;
   std::vector<BookState> recentBooks;
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  RecentBookProgress::PdfProductCache pdfProductCache;
+#endif
   int loadedPageStart = NO_PAGE_LOADED;
 
   void loadRecentBooks();

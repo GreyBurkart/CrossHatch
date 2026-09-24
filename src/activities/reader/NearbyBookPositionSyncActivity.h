@@ -1,11 +1,12 @@
 #pragma once
 
-#include <Epub.h>
+#include <ReflowDocument.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -17,7 +18,7 @@
 class NearbyBookPositionSyncActivity final : public Activity {
  public:
   explicit NearbyBookPositionSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                          std::shared_ptr<Epub> epub, const std::string& epubPath,
+                                          std::shared_ptr<ReflowDocument> document, const std::string& documentPath,
                                           int currentSpineIndex, int currentPage, int totalPagesInSpine,
                                           KOReaderPosition localKoPos, std::string localChapterName,
                                           DocumentMatchMethod matchMethod,
@@ -90,8 +91,8 @@ class NearbyBookPositionSyncActivity final : public Activity {
   bool ignoreInitialConfirmRelease_ = false;
   bool ignoreInitialPowerRelease_ = false;
 
-  std::shared_ptr<Epub> epub_;
-  std::string epubPath_;
+  std::shared_ptr<ReflowDocument> document_;
+  std::string documentPath_;
   std::string localChapterName_;
   std::string peerId_;
   std::string peerName_;
@@ -116,7 +117,7 @@ class NearbyBookPositionSyncActivity final : public Activity {
   uint32_t lastPositionSendMs_ = 0;
 
   bool prepareLocalPosition();
-  bool ensureEpubLoaded();
+  bool ensureDocumentAvailable();
   bool beginEspNow();
   void endEspNow();
   void startSync();
