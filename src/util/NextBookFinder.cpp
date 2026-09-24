@@ -15,8 +15,11 @@ constexpr size_t NAME_BUFFER_SIZE = 500;
 
 bool isSupportedBookFile(const std::string_view name) {
   // Formats ReaderActivity can open (bmp is a viewer, not a book, so it is excluded)
-  return FsHelpers::hasEpubExtension(name) || FsHelpers::hasPdfExtension(name) || FsHelpers::hasXtcExtension(name) ||
-         FsHelpers::hasTxtExtension(name) || FsHelpers::hasMarkdownExtension(name);
+#if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
+  if (FsHelpers::hasPdfExtension(name)) return true;
+#endif
+  return FsHelpers::hasEpubExtension(name) || FsHelpers::hasXtcExtension(name) || FsHelpers::hasTxtExtension(name) ||
+         FsHelpers::hasMarkdownExtension(name);
 }
 }  // namespace
 
