@@ -483,8 +483,9 @@ void Page::render(GfxRenderer& renderer, const int fontId, const int xOffset, co
 
 void Page::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
                   const bool foregroundBlack, PdfPixelCacheRenderWorkspace* const pdfWorkspace) const {
-  renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, foregroundBlack, pdfWorkspace,
-                             [](const PageElement&) { return true; });
+  // Draw images after text so overlay images stay above text (v1.5.0 behavior).
+  renderText(renderer, fontId, xOffset, yOffset, foregroundBlack);
+  renderImages(renderer, fontId, xOffset, yOffset, foregroundBlack, pdfWorkspace);
 }
 
 void Page::renderText(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,

@@ -378,12 +378,14 @@ bool ChapterHtmlSlimParser::shouldAbortForLowMemory(const char* stage) {
     return true;
   }
 
-  const uint32_t minimumFree =
-      usesSemanticLayout() ? MemoryBudget::PDF_TEXT_LAYOUT_MIN_FREE : MemoryBudget::EPUB_TEXT_LAYOUT_MIN_FREE;
-  const uint32_t minimumMaxAlloc =
-      usesSemanticLayout() ? MemoryBudget::PDF_TEXT_LAYOUT_MIN_MAX_ALLOC : MemoryBudget::EPUB_TEXT_LAYOUT_MIN_MAX_ALLOC;
+  // EPUB keeps the v1.5.0 free-heap-only start gate; PDF uses its own small-slab budget.
+  const auto hasLayoutHeap = [this](const MemoryBudget::HeapSnapshot& snapshot) {
+    return usesSemanticLayout() ? MemoryBudget::hasHeap(snapshot, MemoryBudget::PDF_TEXT_LAYOUT_MIN_FREE,
+                                                        MemoryBudget::PDF_TEXT_LAYOUT_MIN_MAX_ALLOC)
+                                : MemoryBudget::hasHeapForEpubTextLayoutStart(snapshot);
+  };
   auto heap = MemoryBudget::snapshot();
-  if (MemoryBudget::hasHeap(heap, minimumFree, minimumMaxAlloc)) {
+  if (hasLayoutHeap(heap)) {
     return false;
   }
 
@@ -394,7 +396,7 @@ bool ChapterHtmlSlimParser::shouldAbortForLowMemory(const char* stage) {
       LOG_DBG("EHP", "Released SD font caches before %s: free=%u->%u maxAlloc=%u->%u", stage, heap.freeHeap,
               afterRelease.freeHeap, heap.maxAllocHeap, afterRelease.maxAllocHeap);
       heap = afterRelease;
-      if (MemoryBudget::hasHeap(heap, minimumFree, minimumMaxAlloc)) {
+      if (hasLayoutHeap(heap)) {
         return false;
       }
     }
