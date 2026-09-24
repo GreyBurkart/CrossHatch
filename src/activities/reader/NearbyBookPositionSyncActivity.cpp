@@ -340,7 +340,8 @@ bool NearbyBookPositionSyncActivity::mapPeerPosition() {
   const PositionCoordinateSpace coordinateSpace = matchMethod_ == DocumentMatchMethod::FILENAME
                                                       ? PositionCoordinateSpace::SourceDocument
                                                       : PositionCoordinateSpace::CurrentDocument;
-  peerCrossPoint_ = ProgressMapper::toCrossPoint(epub_, koPos, currentSpineIndex_, totalPagesInSpine_, coordinateSpace);
+  peerCrossPoint_ =
+      ProgressMapper::toCrossPoint(document_, koPos, currentSpineIndex_, totalPagesInSpine_, coordinateSpace);
   if (!peerCrossPoint_.valid) {
     setError(tr(STR_SYNC_REOPTIMIZE_REQUIRED));
     return false;
@@ -464,6 +465,7 @@ void NearbyBookPositionSyncActivity::renderComparison() const {
 
 #else
 
+#include <Epub.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -729,7 +731,13 @@ bool NearbyBookPositionSyncActivity::prepareLocalPosition() {
     return false;
   }
 
-  const std::string documentHash = (KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME)
+  if (!localKoPosition_.valid) {
+    LOG_ERR(LOG_TAG, "Source position map unavailable; re-optimize the EPUB before filename-based nearby sync");
+    setError(tr(STR_SYNC_REOPTIMIZE_REQUIRED));
+    return false;
+  }
+
+  const std::string documentHash = (matchMethod_ == DocumentMatchMethod::FILENAME)
                                        ? KOReaderDocumentId::calculateFromFilename(documentPath_)
                                        : KOReaderDocumentId::calculate(documentPath_);
   if (documentHash.size() != DOCUMENT_HASH_BYTES) {
@@ -1178,7 +1186,15 @@ bool NearbyBookPositionSyncActivity::mapPeerPosition() {
   KOReaderPosition koPos;
   koPos.xpath = peerPosition_.xpath.data();
   koPos.percentage = qToPercentage(peerPosition_.percentageQ);
-  peerCrossPoint_ = ProgressMapper::toCrossPoint(document_, koPos, currentSpineIndex_, totalPagesInSpine_);
+  const PositionCoordinateSpace coordinateSpace = matchMethod_ == DocumentMatchMethod::FILENAME
+                                                      ? PositionCoordinateSpace::SourceDocument
+                                                      : PositionCoordinateSpace::CurrentDocument;
+  peerCrossPoint_ =
+      ProgressMapper::toCrossPoint(document_, koPos, currentSpineIndex_, totalPagesInSpine_, coordinateSpace);
+  if (!peerCrossPoint_.valid) {
+    setError(tr(STR_SYNC_REOPTIMIZE_REQUIRED));
+    return false;
+  }
   if (peerCrossPoint_.totalPages <= 0) {
     if (matchMethod_ == DocumentMatchMethod::FILENAME) {
       LOG_ERR(LOG_TAG, "Refusing optimized raw spine fallback for filename-based nearby sync");
@@ -1246,8 +1262,9 @@ bool NearbyBookPositionSyncActivity::applyPeerPosition() {
     return false;
   }
   if (document_->getFormat() == ReflowDocumentFormat::Epub) {
-    RecentBookProgress::saveCachedEpubPercent(document_->getCachePath(),
-                                              qToPercentage(peerPosition_.percentageQ) * 100.0f);
+    // Cache the Home percentage from the applied local layout, matching what the reader will show.
+    RecentBookProgress::saveCachedEpubPercent(static_cast<const Epub&>(*document_), peerCrossPoint_.spineIndex,
+                                              peerCrossPoint_.pageNumber, pageCount);
   }
   setState(State::SYNCED);
   return true;
