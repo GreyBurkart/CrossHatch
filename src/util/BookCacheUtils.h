@@ -11,9 +11,9 @@ void clearBookCache(const std::string& path);
 // so unknown root state is preserved. Returns false if clearing fails.
 bool clearBookCachePreservingUserState(const std::string& path);
 
-// Clears a known book cache directory while preserving per-book stats. PDF
-// directories use the same selective user-state-preserving policy as path-based
-// clearing.
+// Clears a known book cache directory while preserving dictionary lookup
+// history and per-book stats. PDF directories use the same selective
+// user-state-preserving policy as path-based clearing.
 bool clearBookCacheDirectoryPreservingStats(const std::string& cachePath);
 
 // Returns true if the directory name matches a book cache entry.

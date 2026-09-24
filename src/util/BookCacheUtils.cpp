@@ -678,5 +678,6 @@ bool clearBookCacheDirectoryPreservingStats(const std::string& cachePath) {
   if (isPdfCacheDirectoryPath(cachePath)) {
     return clearPdfDerivedCacheDirectory(cachePath);
   }
-  return clearCacheDirectoryPreservingFiles(cachePath, nullptr, 0, true, "clear_preserve_");
+  return clearCacheDirectoryPreservingFiles(cachePath, CACHE_CLEAR_USER_STATE_FILES,
+                                            std::size(CACHE_CLEAR_USER_STATE_FILES), true, "clear_preserve_");
 }

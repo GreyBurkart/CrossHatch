@@ -233,8 +233,11 @@ enum class DirectoryMetadataScanStatus : uint8_t {
   Failed,
 };
 
-DirectoryMetadataScanStatus collectMetadataPathsRecursively(const std::string& dirPath,
-                                                            std::vector<std::string>& paths) {
+// stopAtPdf=true (directory delete) returns PdfFound so the caller can hand the
+// tree to the PDF delete journal. stopAtPdf=false (empty trash) keeps walking and
+// collects PDF paths too, so clearFileMetadata() drops their path-keyed caches.
+DirectoryMetadataScanStatus collectMetadataPathsRecursively(const std::string& dirPath, std::vector<std::string>& paths,
+                                                            const bool stopAtPdf = true) {
   auto dir = Storage.open(dirPath.c_str());
   if (!dir || !dir.isDirectory()) {
     LOG_ERR("FileBrowser", "Failed to scan directory metadata before delete: %s", dirPath.c_str());
@@ -269,7 +272,11 @@ DirectoryMetadataScanStatus collectMetadataPathsRecursively(const std::string& d
     const bool isDirectory = file.isDirectory();
 #if defined(CROSSINK_ENABLE_PDF) && CROSSINK_ENABLE_PDF
     const std::string_view nameView(name, nameLength);
-    if (!isDirectory && isPdfDirectoryDeleteEntry(nameView)) {
+    if (!stopAtPdf && !isDirectory && FsHelpers::hasPdfExtension(nameView)) {
+      paths.push_back(buildFullPath(dirPath, name));
+      continue;
+    }
+    if (stopAtPdf && !isDirectory && isPdfDirectoryDeleteEntry(nameView)) {
       if (!closeMetadataDirectory(file, dir)) {
         LOG_ERR("FileBrowser", "Failed to close PDF directory scan: %s", dirPath.c_str());
         return DirectoryMetadataScanStatus::Failed;
@@ -287,7 +294,7 @@ DirectoryMetadataScanStatus collectMetadataPathsRecursively(const std::string& d
         }
         return DirectoryMetadataScanStatus::Failed;
       }
-      const DirectoryMetadataScanStatus childStatus = collectMetadataPathsRecursively(childPath, paths);
+      const DirectoryMetadataScanStatus childStatus = collectMetadataPathsRecursively(childPath, paths, stopAtPdf);
       if (childStatus != DirectoryMetadataScanStatus::Complete) {
         if (!closeMetadataDirectory(file, dir)) {
           LOG_ERR("FileBrowser", "Failed to close parent directory scan: %s", dirPath.c_str());
@@ -648,7 +655,8 @@ void FileBrowserActivity::promptEmptyTrash() {
     }
 
     std::vector<std::string> metadataPaths;
-    collectMetadataPathsRecursively(crosshatch::trash::DIRECTORY, metadataPaths);
+    // Best-effort like before PDF support: clear whatever metadata the walk found.
+    (void)collectMetadataPathsRecursively(crosshatch::trash::DIRECTORY, metadataPaths, false);
     for (const auto& metadataPath : metadataPaths) {
       BookActions::clearFileMetadata(metadataPath);
       if (crosshatch::trash::isPath(metadataPath.c_str())) {

@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <mutex>
 
-#include "JsonSettingsIO.h"
 #include "util/BookMoveDurableFile.h"
 
 namespace {
@@ -24,7 +23,11 @@ bool writeStatePayload(void* const context, void* const fileContext) {
   if (context == nullptr || fileContext == nullptr) return false;
   auto& state = *static_cast<CrossPointState*>(context);
   auto& file = *static_cast<FsFile*>(fileContext);
-  return JsonSettingsIO::writeState(state, file);
+  // Serialize the full personal state document (document slots, pinned book,
+  // overlay resume, ...) so a book move never drops fields from state.json.
+  JsonDocument doc;
+  state.toJson(doc);
+  return serializeJson(doc, file) != 0;
 }
 
 bool verifyStatePayload(void* const context, const char* const path) {
@@ -121,6 +124,8 @@ bool CrossPointState::saveToFile() const {
 }
 
 bool CrossPointState::activateOpenPathMigration(const std::string& oldPath, const std::string& newPath) {
+  // Same lock order as saveToFile(): storeMutex, then _mutex.
+  std::lock_guard<std::mutex> storeLock(storeMutex);
   std::lock_guard<std::mutex> lock(_mutex);
   const bool changed = openEpubPath == oldPath;
   if (changed) openEpubPath = newPath;
@@ -168,14 +173,17 @@ bool CrossPointState::loadFromFile() {
 
   // Try JSON first
   if (Storage.exists(STATE_FILE_JSON)) {
-    String json = Storage.readFile(STATE_FILE_JSON);
-    if (!json.isEmpty()) {
-      std::lock_guard<std::mutex> lock(_mutex);
-      if (JsonSettingsIO::loadState(*this, json.c_str())) {
-        if (!cleanupStateMoveArtifacts()) {
-          LOG_ERR("CPS", "Failed to clean state move artifacts");
+    {
+      std::lock_guard<std::mutex> storeLock(storeMutex);
+      JsonDocument doc;
+      if (PersistableStoreBase::readDocFromFile(STATE_FILE_JSON, doc)) {
+        std::lock_guard<std::mutex> stateLock(_mutex);
+        if (fromJson(doc.as<JsonVariantConst>())) {
+          if (!cleanupStateMoveArtifacts()) {
+            LOG_ERR("CPS", "Failed to clean state move artifacts");
+          }
+          return true;
         }
-        return true;
       }
     }
     if (Storage.exists(STATE_MOVE_BACKUP)) {
@@ -184,10 +192,11 @@ bool CrossPointState::loadFromFile() {
         LOG_ERR("CPS", "Failed to roll back interrupted state move");
         return false;
       }
-      json = Storage.readFile(STATE_FILE_JSON);
-      if (!json.isEmpty()) {
-        std::lock_guard<std::mutex> lock(_mutex);
-        return JsonSettingsIO::loadState(*this, json.c_str());
+      std::lock_guard<std::mutex> storeLock(storeMutex);
+      JsonDocument doc;
+      if (PersistableStoreBase::readDocFromFile(STATE_FILE_JSON, doc)) {
+        std::lock_guard<std::mutex> stateLock(_mutex);
+        return fromJson(doc.as<JsonVariantConst>());
       }
     }
     return false;
