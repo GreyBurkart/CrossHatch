@@ -2,6 +2,8 @@
 
 ### Added
 
+- TheList synced note: send Apple Notes Markdown to `/CrossHatch/Notes/TheList.md` through HTTP File Transfer, replace the previous copy, and open it offline from Home with the existing checklist and full-text views.
+
 - Bluetooth Remote (Xteink X4 Pro only): use the reader as a BLE keyboard and media remote for a Mac, iPad, iPhone, or Windows PC. Physical buttons and six large touch targets send one key or media action each, with Presentation, Media, Navigation, and Custom profiles. Pairing shows a six-digit code on the reader and requires the host to enter it; up to four hosts can stay paired. An optional setting keeps the reader awake while a host is connected. See [docs/ble-remote.md](docs/ble-remote.md).
 
 - Basic Markdown reading with styled headings, emphasis, lists, quotes, code, links, and page layouts that match the sleep overlay. Plain TXT and interactive checklists remain available.
@@ -17,6 +19,9 @@
 - Pin a book to Home: turn on Settings → System → Pin Book to Home, then long-press a book and choose Pin to Home. The book gets its own Home entry, separate from Recent Books, and opens at its saved position. The entry appears only when it fits in the current theme's menu without paging, and is not shown in the Lyra Carousel theme.
 
 ### Fixed
+
+- HTTP upload requests without a file no longer report the previous upload's success.
+- Home button navigation counts every visible menu entry, including TheList and pinned books.
 
 - Reader short-press power shortcuts now execute their configured action instead of the long-press action.
 

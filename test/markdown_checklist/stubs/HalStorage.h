@@ -21,12 +21,14 @@ inline bool failClose = false;
 inline bool failRead = false;
 inline bool failCreate = false;
 inline bool failRemove = false;
+inline bool failMkdir = false;
 inline void reset() {
   files.clear();
   handles.clear();
   overlapping = renameCount = 0;
   failRenames.clear();
   failWrite = failSync = failClose = failRead = failCreate = failRemove = false;
+  failMkdir = false;
 }
 }  // namespace fixture
 
@@ -75,6 +77,7 @@ class HalFile {
 
 class HalStorage {
  public:
+  bool ensureDirectoryExists(const char*) { return !fixture::failMkdir; }
   HalFile open(const char* path, int flags = O_RDONLY) {
     const bool writable = (flags & O_WRONLY) != 0;
     if (flags & O_CREAT) {

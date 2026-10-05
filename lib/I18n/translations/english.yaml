@@ -658,6 +658,7 @@ STR_KOREADER_SYNC_LOW_MEMORY: "Not enough free memory to finish sync. Please ret
 STR_UNKNOWN_ERROR: "Unknown error"
 STR_SAVE_PROGRESS_FAILED: "Could not save progress"
 STR_CHECKLISTS: "Checklists"
+STR_SYNCED_NOTE_TITLE: "TheList"
 STR_NO_CHECKLIST_FILES: "No Markdown files in this folder"
 STR_CHECKLIST_EMPTY: "No checklist items found"
 STR_CHECKLIST_READ_FAILED: "Could not read checklist. Close and reopen it."

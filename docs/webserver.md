@@ -97,9 +97,10 @@ The File Manager page can:
 - Move files into existing folders
 - Delete one or more selected files or empty folders
 
-Existing files with the same name are overwritten by uploads. When EPUB files
-are overwritten, moved, renamed, or deleted through the web server, the matching
-book cache is cleared so stale metadata is not reused.
+Uploads reject existing filenames. The fixed [TheList synced note](synced-note.md)
+is the HTTP-only replacement exception. When EPUB files are uploaded, moved,
+renamed, or deleted through the web server, the matching book cache is cleared
+so stale metadata is not reused.
 
 #### EPUB Optimization
 

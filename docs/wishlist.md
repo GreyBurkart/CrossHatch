@@ -129,8 +129,11 @@ active implementation scope:
 
 ### W4. Better web transfer and selected-source integrations
 
-Scope pending reconsideration. Start from a concrete transfer workflow before
-selecting integrations or protocols. Earlier ideas below are candidates only.
+The first slice is [TheList](synced-note.md): one Apple Note exported to the
+fixed `/CrossHatch/Notes/TheList.md` path over existing HTTP File Transfer,
+with replacement uploads and Home access to the existing Markdown/checklist
+views. Apple Shortcut conversion and physical transfer acceptance remain to be
+verified. Broader integrations below remain candidates only.
 
 Make loading material onto CrossHatch simpler and more reliable, including
 clear destination selection and transfer results. Prioritize a supported path

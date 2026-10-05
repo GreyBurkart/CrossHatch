@@ -1,6 +1,8 @@
 add_executable(MarkdownChecklistTest
   MarkdownChecklistTest.cpp
+  SyncedNoteTest.cpp
   ${REPO_ROOT}/src/util/MarkdownChecklist.cpp
+  ${REPO_ROOT}/src/util/SyncedNote.cpp
 )
 target_include_directories(MarkdownChecklistTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs

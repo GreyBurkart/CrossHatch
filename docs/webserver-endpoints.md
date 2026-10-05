@@ -123,7 +123,10 @@ File uploaded successfully: mybook.epub
 
 Notes:
 
-- Existing files with the same name are overwritten.
+- Existing files with the same name are rejected, except the fixed synced note
+  `/CrossHatch/Notes/TheList.md`. That HTTP destination creates its directory and
+  replaces the previous copy after a complete upload (64 KiB maximum); see
+  [TheList transfer contract](synced-note.md).
 - EPUB cache data for the uploaded path is cleared after a successful upload.
 - HTTP upload uses a 4 KB write buffer before flushing to the SD card.
 

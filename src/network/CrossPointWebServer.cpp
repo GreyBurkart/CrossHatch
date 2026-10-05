@@ -40,6 +40,7 @@
 #include "util/BookCacheUtils.h"
 #include "util/FontFamilyLabel.h"
 #include "util/StringUtils.h"
+#include "util/SyncedNote.h"
 
 namespace {
 // Folders/files to hide from the web interface file browser.
@@ -441,6 +442,9 @@ void CrossPointWebServer::stop() {
   }
 
   running = false;  // Set this FIRST to prevent handleClient from using server
+
+  upload.file.close();
+  if (upload.syncedNote) SyncedNote::discardUpload();
 
   LOG_DBG("WEB", "[MEM] Free heap before stop: %d bytes", ESP.getFreeHeap());
 
@@ -877,7 +881,7 @@ static bool flushUploadBuffer(CrossPointWebServer::UploadState& state) {
     const size_t written = state.file.write(state.buffer.data(), state.bufferPos);
 
     if (written != state.bufferPos) {
-      LOG_DBG("WEB", "[UPLOAD] Buffer flush failed: expected %d, wrote %d", state.bufferPos, written);
+      LOG_ERR("WEB", "[UPLOAD] Buffer flush failed: expected %d, wrote %d", state.bufferPos, written);
       state.bufferPos = 0;
       return false;
     }
@@ -896,6 +900,9 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
   const HTTPUpload& upload = server->upload();
 
   if (upload.status == UPLOAD_FILE_START) {
+    state.file.close();
+    if (state.syncedNote) SyncedNote::discardUpload();
+    state.syncedNote = false;
     state.fileName = StringUtils::sanitizeFilename(upload.filename.c_str()).c_str();
     state.size = 0;
     state.success = false;
@@ -925,22 +932,36 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       return;
     }
 
-    // Check if file already exists.
-    if (Storage.exists(filePath.c_str())) {
+    state.syncedNote = SyncedNote::isPath(filePath.c_str());
+    if (state.syncedNote && !SyncedNote::prepareUpload()) {
+      state.error = "Could not prepare TheList destination";
+      return;
+    }
+
+    // Only the fixed externally owned note may replace an existing document.
+    if (!state.syncedNote && Storage.exists(filePath.c_str())) {
       state.error = "File already exists: " + state.fileName;
       LOG_DBG("WEB", "[UPLOAD] Collision: %s", filePath.c_str());
       return;
     }
 
     // Open file for writing - this can be slow due to FAT cluster allocation
-    if (!Storage.openFileForWrite("WEB", filePath, state.file)) {
+    if (!Storage.openFileForWrite("WEB", state.syncedNote ? SyncedNote::TEMP_PATH : filePath.c_str(), state.file)) {
       state.error = "Failed to create file on SD card";
-      LOG_DBG("WEB", "[UPLOAD] FAILED to create file: %s", filePath.c_str());
+      LOG_ERR("WEB", "[UPLOAD] FAILED to create file: %s", filePath.c_str());
       return;
     }
 
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (state.file && state.error.isEmpty()) {
+      if (state.syncedNote && upload.currentSize > SyncedNote::MAX_BYTES - state.size) {
+        state.error = "TheList exceeds the 64 KiB limit";
+        LOG_ERR("WEB", "%s", state.error.c_str());
+        state.file.close();
+        state.bufferPos = 0;
+        SyncedNote::discardUpload();
+        return;
+      }
       // Buffer incoming data and flush when buffer is full
       // This reduces SD card write operations and improves throughput
       const uint8_t* data = upload.buf;
@@ -960,6 +981,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
           if (!flushUploadBuffer(state)) {
             state.error = "Failed to write to SD card - disk may be full";
             state.file.close();
+            if (state.syncedNote) SyncedNote::discardUpload();
             return;
           }
         }
@@ -973,7 +995,16 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       if (!flushUploadBuffer(state)) {
         state.error = "Failed to write final data to SD card";
       }
-      state.file.close();
+      if (state.syncedNote && !state.file.sync()) state.error = "Failed to sync uploaded note";
+      const bool closed = state.file.close();
+      if (state.syncedNote) {
+        if (!closed) state.error = "Failed to close uploaded note";
+        if (state.error.isEmpty() && !SyncedNote::finishUpload()) state.error = "Failed to replace TheList";
+        if (!state.error.isEmpty()) {
+          LOG_ERR("WEB", "%s", state.error.c_str());
+          SyncedNote::discardUpload();
+        }
+      }
 
       if (state.error.isEmpty()) {
         state.success = true;
@@ -998,8 +1029,9 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       String filePath = state.path;
       if (!filePath.endsWith("/")) filePath += "/";
       filePath += state.fileName;
-      Storage.remove(filePath.c_str());
+      if (!state.syncedNote) Storage.remove(filePath.c_str());
     }
+    if (state.syncedNote) SyncedNote::discardUpload();
     state.error = "Upload aborted";
     LOG_DBG("WEB", "Upload aborted");
   }
@@ -1012,6 +1044,9 @@ void CrossPointWebServer::handleUploadPost(UploadState& state) const {
     const String error = state.error.isEmpty() ? "Unknown error during upload" : state.error;
     server->send(400, "text/plain", error);
   }
+  // A following request without a multipart file must not reuse this result.
+  state.success = false;
+  state.error = "";
 }
 
 void CrossPointWebServer::handleCreateFolder() const {

@@ -124,6 +124,7 @@ class ActivityManager {
   void goToSettings(bool dismissOnUpSwipe = false);
   void goToFileBrowser(std::string path = {});
   void goToChecklists(std::string path = {});
+  void goToSyncedNote();
   void goToRecentBooks();
   void goToRecentBooks(VirtualViews::ViewMode view);
   void goToBrowser();

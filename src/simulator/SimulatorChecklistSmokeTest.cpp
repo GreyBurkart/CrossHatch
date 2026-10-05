@@ -15,6 +15,7 @@
 #include "components/UiAppHelpers.h"
 #include "util/MarkdownChecklist.h"
 #include "util/ScreenshotUtil.h"
+#include "util/SyncedNote.h"
 
 extern ActivityManager activityManager;
 extern GfxRenderer renderer;
@@ -291,6 +292,39 @@ bool runSimulatorChecklistSmokeTestTick() {
       break;
     case 38:
       require(activityManager.isHomeActivity(), "Folder navigation did not return Home");
+      activityManager.goToSyncedNote();
+      break;
+    case 39:
+      require(activityManager.isCurrentActivityNamed("NetworkModeSelection"), "Missing TheList did not offer transfer");
+      activityManager.goHome(HomeMenuItem::CHECKLISTS);
+      break;
+    case 40:
+      require(SyncedNote::prepareUpload(), "Could not prepare TheList directory");
+      require(
+          Storage.writeFile(SyncedNote::TEMP_PATH, "# TheList\nRemember to call John.\n- [ ] Radios\n- [x] Sound\n"),
+          "Could not write TheList fixture");
+      require(SyncedNote::finishUpload(), "Could not publish TheList fixture");
+      tap(Button::Down);  // Home: Checklists -> TheList
+      break;
+    case 41:
+      tap(Button::Confirm);
+      break;
+    case 42:
+      require(activityManager.isCurrentActivityNamed("Checklist"), "Home TheList did not open offline checklist");
+      capture("/thelist-checklist.bmp");
+      activityManager.goHome(HomeMenuItem::SETTINGS_MENU);
+      break;
+    case 43:
+      tap(Button::Down);  // Wrap from the final menu item to the first.
+      break;
+    case 44:
+      tap(Button::Up);  // Wrap back to Settings with every Home entry counted.
+      break;
+    case 45:
+      tap(Button::Confirm);
+      break;
+    case 46:
+      require(activityManager.isCurrentActivityNamed("Settings"), "Home navigation lost its final menu entry");
       LOG_INF("CHECKTEST", "Phase 3 checklist smoke test passed");
       std::_Exit(0);
   }

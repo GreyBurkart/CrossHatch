@@ -45,6 +45,9 @@ allocation. An SD write/read failure must show a page error, not a partial page.
 
 ## Markdown checklists
 
+For one-way Apple Notes delivery to Home → **TheList**, see
+[the synced-note workflow](synced-note.md).
+
 Create a UTF-8 `.md` file in a text editor and copy it to SD using the existing
 web transfer or USB Drive. Open **Checklists** from Home to browse folders and
 `.md` files on SD, or open a checklist from Library. Files stay in their existing

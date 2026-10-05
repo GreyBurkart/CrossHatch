@@ -36,6 +36,7 @@ class CrossPointWebServer {
     String path = "/";
     size_t size = 0;
     bool success = false;
+    bool syncedNote = false;
     String error = "";
 
     // Upload write buffer - batches small writes into larger SD card operations

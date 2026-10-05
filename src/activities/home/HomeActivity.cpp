@@ -51,7 +51,7 @@ namespace {
 constexpr uint32_t CAROUSEL_CACHE_MAGIC = 0x43434152;  // "CCAR"
 // Cached frames include all Home visuals, including the menu icons. Bump this
 // whenever their rendering changes so stale snapshots are rebuilt after OTA.
-constexpr uint16_t CAROUSEL_CACHE_VERSION = 6;
+constexpr uint16_t CAROUSEL_CACHE_VERSION = 7;
 constexpr char CAROUSEL_CACHE_PATH[] = "/.crosspoint/home_carousel_cache.bin";
 constexpr char CAROUSEL_CACHE_TMP_PATH[] = "/.crosspoint/home_carousel_cache.tmp";
 constexpr uint32_t CAROUSEL_FRAME_MIN_FREE_AFTER_ALLOC = 64U * 1024U;
@@ -62,6 +62,7 @@ constexpr int HOME_BOOK_SWAP_RECENT_COUNT = 2;
 enum class HomeMenuAction {
   BrowseFiles,
   Checklists,
+  SyncedNote,
   ContinueReading,
   PinnedBook,
   RecentBooks,
@@ -82,8 +83,8 @@ struct HomeMenuEntry {
 };
 
 struct HomeMenuEntries {
-  // Continue Reading + Pinned Book + the nine entries appendHomeMenuItems can add.
-  static constexpr int kCapacity = 11;
+  // Continue Reading + Pinned Book + the ten entries appendHomeMenuItems can add.
+  static constexpr int kCapacity = 12;
   std::array<HomeMenuEntry, kCapacity> entries{};
   int count = 0;
 
@@ -307,6 +308,7 @@ void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasRe
                          bool hasClippings) {
   items.push({tr(STR_BROWSE_FILES), Folder, HomeMenuAction::BrowseFiles});
   items.push({tr(STR_CHECKLISTS), ChecklistIcon, HomeMenuAction::Checklists});
+  items.push({tr(STR_SYNCED_NOTE_TITLE), ChecklistIcon, HomeMenuAction::SyncedNote});
   items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
 
   if (hasOpdsServers) {
@@ -339,6 +341,7 @@ HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats,
     items.push({pinnedBookLabel, Book, HomeMenuAction::PinnedBook});
   }
   items.push({tr(STR_CHECKLISTS), ChecklistIcon, HomeMenuAction::Checklists});
+  items.push({tr(STR_SYNCED_NOTE_TITLE), ChecklistIcon, HomeMenuAction::SyncedNote});
   items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
 
   if (hasOpdsServers) {
@@ -698,25 +701,10 @@ static_assert(HomeActivity::kMaxCachedBooks >= LyraCarouselMetrics::values.homeR
 
 int HomeActivity::getMenuItemCount() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  int count = 4;  // File Browser, Recents, File transfer, Settings
-  if (!metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
-    count += getVisibleRecentBookCount();
-  } else if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
-    count++;  // Continue Reading menu item
-  }
-  if (hasOpdsServers) {
-    count++;
-  }
-  if (hasReadingStats) {
-    count++;
-  }
-  if (hasBookmarks || hasClippings) {
-    count++;
-  }
-  if (pinnedBookVisible) {
-    count++;
-  }
-  return count;
+  const auto items =
+      buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
+                                   metrics.homeContinueReadingInMenu && !recentBooks.empty(), getPinnedBookLabel());
+  return items.size() + (metrics.homeContinueReadingInMenu ? 0 : getVisibleRecentBookCount());
 }
 
 void HomeActivity::loadRecentBooks(int maxBooks, const std::string& excludePath) {
@@ -1741,6 +1729,9 @@ void HomeActivity::loop() {
           case HomeMenuAction::Checklists:
             activityManager.goToChecklists();
             break;
+          case HomeMenuAction::SyncedNote:
+            activityManager.goToSyncedNote();
+            break;
 #if CROSSINK_APP_CAP_BLE_REMOTE
           case HomeMenuAction::BluetoothRemote:
             onBluetoothRemoteOpen();
@@ -1993,6 +1984,9 @@ void HomeActivity::loop() {
         break;
       case HomeMenuAction::Checklists:
         activityManager.goToChecklists();
+        break;
+      case HomeMenuAction::SyncedNote:
+        activityManager.goToSyncedNote();
         break;
 #if CROSSINK_APP_CAP_BLE_REMOTE
       case HomeMenuAction::BluetoothRemote:

@@ -17,6 +17,7 @@
 #include "activities/util/ChecklistActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
 #include "components/UITheme.h"
+#include "util/SyncedNote.h"
 
 bool ReaderActivity::isXtcFile(const std::string& path) { return FsHelpers::hasXtcExtension(path); }
 
@@ -207,7 +208,9 @@ void ReaderActivity::onEnter() {
       onGoBack();
       return;
     }
-    const auto status = checklist->load();
+    const auto status = SyncedNote::isPath(initialBookPath) && !SyncedNote::recover()
+                            ? MarkdownChecklist::Status::RecoveryNeeded
+                            : checklist->load();
     if (status != MarkdownChecklist::Status::NoTasks) {
       auto viewer =
           makeUniqueNoThrow<ChecklistActivity>(renderer, mappedInput, std::move(checklist), status, returnToChecklists);

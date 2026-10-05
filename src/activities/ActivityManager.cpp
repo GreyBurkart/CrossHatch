@@ -39,6 +39,7 @@
 #include "settings/SettingsActivity.h"
 #include "util/FrontlightPanelActivity.h"
 #include "util/FullScreenMessageActivity.h"
+#include "util/SyncedNote.h"
 #include "util/TwoFingerSwipe.h"
 
 namespace {
@@ -575,6 +576,16 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
 
 void ActivityManager::goToFileTransfer(std::string returnBookPath) {
   replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput, std::move(returnBookPath)));
+}
+
+void ActivityManager::goToSyncedNote() {
+  // Reuse the existing reader and transfer lifecycle; no background connection.
+  const bool recovered = SyncedNote::recover();
+  if (recovered && !Storage.exists(SyncedNote::PATH)) {
+    goToFileTransfer();
+    return;
+  }
+  goToReader(SyncedNote::PATH);
 }
 
 bool ActivityManager::goToNearbyBookSend(std::string path, const bool returnToReader) {
